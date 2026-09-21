@@ -1,0 +1,31 @@
+package rules;
+
+import com.example.odm.rules.InventoryUnavailableDeviationFact;
+import com.example.odm.rules.PaymentFailedDeviationFact;
+import com.example.odm.rules.DecisionHolder;
+
+global DecisionHolder decisionHolder;
+
+// See docs/drools.md for the full explanation of what each rule means in business
+// terms. Keep this file small and readable - it is a demo, not a rules engine stress test.
+
+rule "Inventory unavailable always fails the order"
+    when
+        InventoryUnavailableDeviationFact()
+    then
+        decisionHolder.setDecision("FAIL_ORDER");
+end
+
+rule "Payment failed but attempts remain - retry"
+    when
+        PaymentFailedDeviationFact(attemptNumber < maximumAttempts)
+    then
+        decisionHolder.setDecision("RETRY");
+end
+
+rule "Payment retries exhausted - compensate"
+    when
+        PaymentFailedDeviationFact(attemptNumber >= maximumAttempts)
+    then
+        decisionHolder.setDecision("COMPENSATE");
+end

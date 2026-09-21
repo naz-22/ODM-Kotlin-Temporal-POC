@@ -1,0 +1,218 @@
+services:
+
+  # ---------------------------------------------------------------------------
+  # One PostgreSQL database per business service (see docs/architecture.md for
+  # why each service owns its own schema and never reaches into another's).
+  # ---------------------------------------------------------------------------
+
+  order-postgres:
+    image: postgres:16
+    container_name: kotlin-ol-order-postgres
+    environment:
+      POSTGRES_DB: ${ORDER_POSTGRES_DB}
+      POSTGRES_USER: ${DB_USERNAME}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+    ports:
+      - "5434:5432"
+    volumes:
+      - order-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USERNAME}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  inventory-postgres:
+    image: postgres:16
+    container_name: kotlin-ol-inventory-postgres
+    environment:
+      POSTGRES_DB: ${INVENTORY_POSTGRES_DB}
+      POSTGRES_USER: ${DB_USERNAME}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+    ports:
+      - "5436:5432"
+    volumes:
+      - inventory-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USERNAME}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  payment-postgres:
+    image: postgres:16
+    container_name: kotlin-ol-payment-postgres
+    environment:
+      POSTGRES_DB: ${PAYMENT_POSTGRES_DB}
+      POSTGRES_USER: ${DB_USERNAME}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+    ports:
+      - "5437:5432"
+    volumes:
+      - payment-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USERNAME}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  odm-postgres:
+    image: postgres:16
+    container_name: kotlin-ol-odm-postgres
+    environment:
+      POSTGRES_DB: ${ODM_POSTGRES_DB}
+      POSTGRES_USER: ${DB_USERNAME}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+    ports:
+      - "5438:5432"
+    volumes:
+      - odm-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USERNAME}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  # ---------------------------------------------------------------------------
+  # Temporal: durable workflow orchestration for the order lifecycle.
+  # ---------------------------------------------------------------------------
+
+  temporal-postgresql:
+    image: postgres:16
+    container_name: kotlin-ol-temporal-postgresql
+    environment:
+      POSTGRES_PASSWORD: temporal
+      POSTGRES_USER: temporal
+    ports:
+      - "5435:5432"
+    networks:
+      - temporal-network
+    volumes:
+      - temporal-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U temporal"]
+      interval: 5s
+      timeout: 5s
+      retries: 60
+      start_period: 30s
+
+  temporal-admin-tools:
+    image: temporalio/admin-tools:1.31.0
+    container_name: kotlin-ol-temporal-admin-tools
+    restart: on-failure:6
+    depends_on:
+      temporal-postgresql:
+        condition: service_healthy
+    environment:
+      - DB=postgres12
+      - DB_PORT=5432
+      - POSTGRES_USER=temporal
+      - POSTGRES_PWD=temporal
+      - POSTGRES_SEEDS=temporal-postgresql
+      - SQL_PASSWORD=temporal
+    networks:
+      - temporal-network
+    volumes:
+      - ./scripts:/scripts
+    entrypoint: ["/bin/sh"]
+    command: /scripts/setup-postgres.sh
+
+  temporal:
+    image: temporalio/server:1.31.0
+    container_name: kotlin-ol-temporal
+    depends_on:
+      temporal-admin-tools:
+        condition: service_completed_successfully
+    environment:
+      - DB=postgres12
+      - DB_PORT=5432
+      - POSTGRES_USER=temporal
+      - POSTGRES_PWD=temporal
+      - POSTGRES_SEEDS=temporal-postgresql
+      - BIND_ON_IP=0.0.0.0
+      - DYNAMIC_CONFIG_FILE_PATH=config/dynamicconfig/development-sql.yaml
+    networks:
+      - temporal-network
+    ports:
+      - "7233:7233"
+    volumes:
+      - ./dynamicconfig:/etc/temporal/config/dynamicconfig
+    healthcheck:
+      test: ["CMD", "nc", "-z", "localhost", "7233"]
+      interval: 5s
+      timeout: 3s
+      start_period: 30s
+      retries: 60
+
+  temporal-create-namespace:
+    image: temporalio/admin-tools:1.31.0
+    container_name: kotlin-ol-temporal-create-namespace
+    restart: on-failure:5
+    depends_on:
+      temporal:
+        condition: service_healthy
+    environment:
+      - TEMPORAL_ADDRESS=temporal:7233
+      - DEFAULT_NAMESPACE=default
+    networks:
+      - temporal-network
+    volumes:
+      - ./scripts:/scripts
+    entrypoint: ["/bin/sh"]
+    command: /scripts/create-namespace.sh
+
+  temporal-ui:
+    image: temporalio/ui:2.49.1
+    container_name: kotlin-ol-temporal-ui
+    depends_on:
+      temporal:
+        condition: service_healthy
+    environment:
+      - TEMPORAL_ADDRESS=temporal:7233
+      - TEMPORAL_CORS_ORIGINS=http://localhost:3000
+    networks:
+      - temporal-network
+    ports:
+      - "8080:8080"
+
+  # ---------------------------------------------------------------------------
+  # Solace PubSub+ (standard edition): the real business-event backbone. Web
+  # management UI is remapped to 8087 so it never collides with Temporal UI's 8080.
+  # See docs/solace.md for topic names and publisher/consumer responsibilities.
+  # ---------------------------------------------------------------------------
+
+  solace:
+    image: solace/solace-pubsub-standard:latest
+    container_name: kotlin-ol-solace
+    shm_size: 1g
+    ulimits:
+      nofile:
+        soft: 2448
+        hard: 42192
+    environment:
+      - username_admin_globalaccesslevel=admin
+      - username_admin_password=admin
+      - system_scaling_maxconnectioncount=100
+    ports:
+      - "55555:55555" # SMF - what solace.java.host in every service's application.properties points at
+      - "8087:8080"    # Solace web management console (remapped from the image's default 8080)
+      - "9000:9000"    # REST messaging (not used by this POC, exposed for completeness)
+      - "5550:5550"    # health check port
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:5550/health-check/guaranteed-active || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 60s
+
+networks:
+  temporal-network:
+    driver: bridge
+    name: temporal-network
+
+volumes:
+  order-postgres-data:
+  inventory-postgres-data:
+  payment-postgres-data:
+  odm-postgres-data:
+  temporal-postgres-data:

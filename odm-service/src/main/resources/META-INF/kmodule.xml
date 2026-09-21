@@ -1,0 +1,5 @@
+<kmodule xmlns="http://www.drools.org/xsd/kmodule">
+    <kbase name="deviationKBase" packages="rules">
+        <ksession name="deviationKSession"/>
+    </kbase>
+</kmodule>

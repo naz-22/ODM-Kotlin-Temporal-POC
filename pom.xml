@@ -1,0 +1,58 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+	xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+	<modelVersion>4.0.0</modelVersion>
+
+	<!-- Same parent every child module already used directly. Making it this
+	     aggregator's parent (rather than each module's) means all five modules
+	     still inherit exactly the same Spring Boot dependency/plugin management
+	     they did before - nothing about version resolution changes, only where
+	     the parent reference points. -->
+	<parent>
+		<groupId>org.springframework.boot</groupId>
+		<artifactId>spring-boot-starter-parent</artifactId>
+		<version>4.1.1</version>
+		<relativePath/> <!-- lookup parent from repository -->
+	</parent>
+
+	<groupId>com.example</groupId>
+	<artifactId>kotlin-order-lifecycle-temporal-poc</artifactId>
+	<version>0.0.1-SNAPSHOT</version>
+	<packaging>pom</packaging>
+
+	<name>kotlin-order-lifecycle-temporal-poc</name>
+	<description>
+		Order Lifecycle POC: Kotlin/Spring Boot, Temporal (durable orchestration),
+		Solace PubSub+ (business events), and ODM/Drools (business decisions).
+	</description>
+
+	<!-- Build/test every service in one reactor run from the repository root:
+	     mvn clean test
+	     Each module remains independently buildable from its own directory too
+	     (its own mvnw/pom.xml still work standalone) - this aggregator does not
+	     change that, it only adds the option to build all five together. There
+	     are no <dependency> relationships between the modules themselves; they
+	     are five independently deployable services that only ever talk to each
+	     other over REST or Solace at runtime, never via a Maven module dependency. -->
+	<modules>
+		<module>order-service</module>
+		<module>inventory-service</module>
+		<module>payment-service</module>
+		<module>notification-service</module>
+		<module>odm-service</module>
+	</modules>
+
+	<!-- These are the properties every module already declares identically
+	     (verified against all five child POMs). Centralizing them here is purely
+	     for documentation/consistency at the aggregator level - each module keeps
+	     its own local declaration too, so nothing about how any individual module
+	     resolves its own dependencies changes. Module-specific properties
+	     (order-service's temporal.version, odm-service's drools.version) stay in
+	     those modules only, since not every service needs them. -->
+	<properties>
+		<java.version>21</java.version>
+		<kotlin.version>2.3.21</kotlin.version>
+		<solace-spring-boot.version>6.0.1</solace-spring-boot.version>
+	</properties>
+
+</project>
