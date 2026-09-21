@@ -48,4 +48,29 @@ class DeviationPersistenceAdapter(
         )
         return deviation
     }
+
+    override fun createIfAbsent(deviation: Deviation): Deviation {
+        val inserted = jpaRepository.insertIfAbsent(
+            id = deviation.id,
+            orderId = deviation.orderId,
+            type = deviation.type.name,
+            attemptNumber = deviation.attemptNumber,
+            reason = deviation.reason,
+            status = deviation.status.name,
+            decision = deviation.decision?.name,
+            createdAt = deviation.createdAt,
+            resolvedAt = deviation.resolvedAt
+        )
+
+        if (inserted == 1) return deviation
+
+        // Lost the race: a concurrent writer already committed the row for this key.
+        // ON CONFLICT DO NOTHING never threw, so the connection/transaction is still
+        // healthy here - safe to just read back whatever they persisted.
+        return findByOrderIdAndTypeAndAttemptNumber(deviation.orderId, deviation.type, deviation.attemptNumber)
+            ?: error(
+                "createIfAbsent reported a conflict but no row exists for " +
+                    "orderId=${deviation.orderId}, type=${deviation.type}, attempt=${deviation.attemptNumber}"
+            )
+    }
 }

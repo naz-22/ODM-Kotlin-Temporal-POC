@@ -50,6 +50,13 @@
 			<scope>runtime</scope>
 		</dependency>
 
+		<!-- Spring Boot 4 split Flyway's autoconfiguration out of spring-boot-autoconfigure
+		     into this dedicated starter - without it, the raw flyway-core/-postgresql
+		     libraries below are on the classpath but never actually invoked. -->
+		<dependency>
+			<groupId>org.springframework.boot</groupId>
+			<artifactId>spring-boot-starter-flyway</artifactId>
+		</dependency>
 		<dependency>
 			<groupId>org.flywaydb</groupId>
 			<artifactId>flyway-core</artifactId>

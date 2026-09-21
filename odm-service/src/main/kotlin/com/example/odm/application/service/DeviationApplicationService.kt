@@ -35,18 +35,6 @@ class DeviationApplicationService(
             return it
         }
 
-        val deviation = existing ?: Deviation(
-            id = UUID.randomUUID(),
-            orderId = orderId,
-            type = type,
-            attemptNumber = attemptNumber,
-            reason = reason,
-            status = DeviationStatus.OPEN,
-            decision = null,
-            createdAt = Instant.now(),
-            resolvedAt = null
-        )
-
         val decision = when (type) {
             DeviationType.INVENTORY_UNAVAILABLE ->
                 decisionEngine.decideForInventoryUnavailable(orderId, reason)
@@ -60,11 +48,32 @@ class DeviationApplicationService(
                 )
         }
 
-        val resolved = deviation.resolvedWith(decision)
-        deviationRepository.save(resolved)
+        // A row already exists (created by the Solace-observed path) but has no
+        // decision yet - fill it in on that same row. This is a plain update keyed by
+        // the row's own id, so no insert race is possible here.
+        if (existing != null) {
+            deviationRepository.save(existing.resolvedWith(decision))
+            log.info("Deviation decided: orderId={}, type={}, attempt={}, decision={}", orderId, type, attemptNumber, decision)
+            return decision
+        }
 
-        log.info("Deviation decided: orderId={}, type={}, attempt={}, decision={}", orderId, type, attemptNumber, decision)
-        return decision
+        // No row exists yet for this key. This is exactly where a concurrent Solace
+        // delivery, or a duplicate decide() call, can race to create the first row -
+        // createIfAbsent() is race-safe around the deviations table's own unique
+        // constraint, so this never throws even if we lose the race.
+        val fresh = newOpenDeviation(orderId, type, attemptNumber, reason).resolvedWith(decision)
+        val winner = deviationRepository.createIfAbsent(fresh)
+
+        val finalDecision = winner.decision ?: run {
+            // Lost the race to a Solace-recorded placeholder (no decision yet) -
+            // finish the job by filling in the decision on that same row, exactly
+            // like the existing-row branch above.
+            deviationRepository.save(winner.resolvedWith(decision))
+            decision
+        }
+
+        log.info("Deviation decided: orderId={}, type={}, attempt={}, decision={}", orderId, type, attemptNumber, finalDecision)
+        return finalDecision
     }
 
     override fun findById(id: UUID): Deviation? = deviationRepository.findById(id)
@@ -83,19 +92,31 @@ class DeviationApplicationService(
             return
         }
 
-        deviationRepository.save(
-            Deviation(
-                id = UUID.randomUUID(),
-                orderId = orderId,
-                type = type,
-                attemptNumber = attemptNumber,
-                reason = reason,
-                status = DeviationStatus.OPEN,
-                decision = null,
-                createdAt = Instant.now(),
-                resolvedAt = null
+        val fresh = newOpenDeviation(orderId, type, attemptNumber, reason)
+
+        // createIfAbsent() is race-safe: if the synchronous decide() path (or another
+        // Solace redelivery) already created this row, we simply converge on it - no
+        // second row, and whatever decision that row may already carry is untouched.
+        val winner = deviationRepository.createIfAbsent(fresh)
+        if (winner.id == fresh.id) {
+            log.info("Deviation recorded from Solace event: orderId={}, type={}, attempt={}", orderId, type, attemptNumber)
+        } else {
+            log.info(
+                "Deviation already recorded by a concurrent caller for orderId={}, type={}, attempt={} - Solace path converges, no-op",
+                orderId, type, attemptNumber
             )
-        )
-        log.info("Deviation recorded from Solace event: orderId={}, type={}, attempt={}", orderId, type, attemptNumber)
+        }
     }
+
+    private fun newOpenDeviation(orderId: String, type: DeviationType, attemptNumber: Int, reason: String) = Deviation(
+        id = UUID.randomUUID(),
+        orderId = orderId,
+        type = type,
+        attemptNumber = attemptNumber,
+        reason = reason,
+        status = DeviationStatus.OPEN,
+        decision = null,
+        createdAt = Instant.now(),
+        resolvedAt = null
+    )
 }

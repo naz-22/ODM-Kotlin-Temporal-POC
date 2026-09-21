@@ -64,7 +64,15 @@
 			<scope>runtime</scope>
 		</dependency>
 
-		<!-- Flyway owns schema management; ddl-auto is set to validate only. -->
+		<!-- Flyway owns schema management; ddl-auto is set to validate only. Spring Boot 4
+		     split Flyway's autoconfiguration (the bean/migration-initializer glue) out of
+		     spring-boot-autoconfigure into this dedicated starter - without it, the raw
+		     flyway-core/flyway-database-postgresql libraries below are on the classpath
+		     but nothing ever invokes Flyway, so migrations silently never run. -->
+		<dependency>
+			<groupId>org.springframework.boot</groupId>
+			<artifactId>spring-boot-starter-flyway</artifactId>
+		</dependency>
 		<dependency>
 			<groupId>org.flywaydb</groupId>
 			<artifactId>flyway-core</artifactId>
