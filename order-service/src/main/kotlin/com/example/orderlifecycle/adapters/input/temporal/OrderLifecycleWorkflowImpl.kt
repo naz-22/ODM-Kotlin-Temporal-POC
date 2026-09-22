@@ -21,7 +21,13 @@ import java.time.Duration
 //    BUSINESS retries: the call to payment-service succeeded technically and came
 //    back with a normal "payment declined" answer; whether to try again is a business
 //    decision, not something Temporal itself understands.
-class OrderLifecycleWorkflowImpl : OrderLifecycleWorkflow {
+//
+// demoDelay: optional pause (temporal.demo.* properties) so ODM/Drools decisions are
+// visible in Temporal UI during a live demo. Zero (the default, and what tests use via
+// the no-arg constructor) means no timer is scheduled at all.
+class OrderLifecycleWorkflowImpl(
+    private val demoDelay: Duration = Duration.ZERO
+) : OrderLifecycleWorkflow {
 
     private val defaultRetry = RetryOptions.newBuilder()
         .setInitialInterval(Duration.ofSeconds(1))
@@ -54,6 +60,7 @@ class OrderLifecycleWorkflowImpl : OrderLifecycleWorkflow {
             )
             // Inventory unavailability only ever resolves to FAIL_ORDER (see docs/drools.md),
             // but the workflow simply obeys whatever ODM/Drools decides.
+            demoPause()
             activities.failOrder(orderId)
             return "ORDER_FAILED"
         }
@@ -78,9 +85,11 @@ class OrderLifecycleWorkflowImpl : OrderLifecycleWorkflow {
             when (decision) {
                 DeviationDecision.RETRY -> {
                     attemptNumber += 1
+                    demoPause()
                     // loop again - business retry
                 }
                 DeviationDecision.COMPENSATE -> {
+                    demoPause()
                     activities.releaseInventory(orderId)
                     activities.cancelOrder(orderId)
                     return "ORDER_CANCELLED"
@@ -97,5 +106,13 @@ class OrderLifecycleWorkflowImpl : OrderLifecycleWorkflow {
         activities.releaseInventory(orderId)
         activities.cancelOrder(orderId)
         return "ORDER_CANCELLED"
+    }
+
+    // Workflow.sleep is Temporal's durable timer (TimerStarted/TimerFired in history),
+    // NOT Thread.sleep - it keeps the workflow deterministic and survives worker restarts.
+    private fun demoPause() {
+        if (!demoDelay.isZero) {
+            Workflow.sleep(demoDelay)
+        }
     }
 }

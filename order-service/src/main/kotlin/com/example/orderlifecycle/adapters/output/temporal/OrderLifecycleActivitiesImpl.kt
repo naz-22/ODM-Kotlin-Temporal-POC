@@ -60,7 +60,10 @@ class OrderLifecycleActivitiesImpl(
     override fun processPayment(orderId: String, attemptNumber: Int): PaymentAttemptResult {
         val order = orderOrThrow(orderId)
 
-        if (attemptNumber == 1) {
+        // Skipped when already PAYMENT_PENDING: Temporal re-runs this activity with the same
+        // attemptNumber after a worker crash, and the first run may have committed this
+        // transition already. The charge below is idempotent per (orderId, attemptNumber).
+        if (attemptNumber == 1 && order.status != OrderStatus.PAYMENT_PENDING) {
             orderUseCase.transitionOrder(order.id, OrderStatus.PAYMENT_PENDING)
         }
         // Subsequent business-retry attempts stay in PAYMENT_PENDING; only the
