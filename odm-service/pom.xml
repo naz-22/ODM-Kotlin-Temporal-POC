@@ -19,6 +19,8 @@
 		<!-- Drools/KIE version - could not be verified against Maven Central in this
 		     sandbox (no network access); confirm/adjust before a real build. -->
 		<drools.version>9.44.0.Final</drools.version>
+		<!-- Same Temporal SDK version order-service already uses. -->
+		<temporal.version>1.31.0</temporal.version>
 	</properties>
 
 	<dependencies>
@@ -96,6 +98,21 @@
 			<version>${drools.version}</version>
 		</dependency>
 
+		<!-- Temporal: ODM hosts its own Autorecovery Workflow (Scenarios 5/6) on its own
+		     task queue (odm-autorecovery-queue). Unrelated to order-service's workflow. -->
+		<dependency>
+			<groupId>io.temporal</groupId>
+			<artifactId>temporal-sdk</artifactId>
+			<version>${temporal.version}</version>
+		</dependency>
+		<!-- Same reason as in order-service: Temporal's payload converter uses classic
+		     Jackson 2 and needs the Kotlin module to build Kotlin data classes. -->
+		<dependency>
+			<groupId>com.fasterxml.jackson.module</groupId>
+			<artifactId>jackson-module-kotlin</artifactId>
+			<version>2.21.5</version>
+		</dependency>
+
 		<dependency>
 			<groupId>com.solace.spring.boot</groupId>
 			<artifactId>solace-java-spring-boot-starter</artifactId>
@@ -120,6 +137,13 @@
 		<dependency>
 			<groupId>org.jetbrains.kotlin</groupId>
 			<artifactId>kotlin-test-junit5</artifactId>
+			<scope>test</scope>
+		</dependency>
+		<!-- In-memory Temporal test server for the Autorecovery Workflow tests. -->
+		<dependency>
+			<groupId>io.temporal</groupId>
+			<artifactId>temporal-testing</artifactId>
+			<version>${temporal.version}</version>
 			<scope>test</scope>
 		</dependency>
 		<dependency>

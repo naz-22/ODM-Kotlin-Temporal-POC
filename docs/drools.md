@@ -116,3 +116,27 @@ Temporal (via the `getDeviationDecision` Activity in order-service) calls ODM's 
 no callbacks. See [architecture.md](architecture.md) and [solace.md](solace.md) for how this
 endpoint stays authoritative and idempotent even though ODM *also* passively observes the
 same failures via Solace.
+
+## 8. Autorecovery rules (Scenarios 5 and 6)
+
+A second, independent rule set: `src/main/resources/autorecovery/autorecovery-rules.drl`. It
+lives in its own kbase/ksession (`autorecoveryKBase` / `autorecoveryKSession` in
+`kmodule.xml`) and is evaluated by `AutorecoveryDecisionEngine`. Everything above
+(`deviation-rules.drl`, `deviationKSession`, `DroolsDecisionEngine`) is unchanged.
+
+The fact is `AutorecoveryDeviationFact(deviationKey, type, releaseStage, market,
+autoRecoveryEnabled)`. `autoRecoveryEnabled` is resolved beforehand from
+`odm.autorecovery.enabled-markets[...]` in `application.properties`, so the policy stays in
+configuration and the decision stays in Drools. The result is `AUTO_RECOVER` or `MANUAL`,
+together with the name of the rule that fired. That rule name is stored in
+`recovery_deviations.decision_rule`.
+
+| Rule | Condition | Decision |
+|------|-----------|----------|
+| Pre-release short pick with auto recovery enabled | `SHORT_PICK`, `PRE_RELEASE`, enabled | `AUTO_RECOVER` |
+| Post-release deviation | `POST_RELEASE` | `MANUAL` |
+| Pre-release deviation with auto recovery disabled | `PRE_RELEASE`, not enabled | `MANUAL` |
+| Pre-release deviation with no automated recovery procedure | `PRE_RELEASE`, enabled, not `SHORT_PICK` | `MANUAL` |
+
+The rules are mutually exclusive and cover every case, so exactly one fires. See
+[autorecovery.md](autorecovery.md).

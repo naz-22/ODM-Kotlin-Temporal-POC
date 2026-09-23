@@ -1,0 +1,53 @@
+package autorecovery;
+
+import com.example.odm.rules.AutorecoveryDeviationFact;
+import com.example.odm.rules.RecoveryDecisionHolder;
+import com.example.odm.domain.model.RecoveryDecision;
+import com.example.odm.domain.model.RecoveryDeviationType;
+import com.example.odm.domain.model.ReleaseStage;
+
+global RecoveryDecisionHolder decisionHolder;
+
+// Autorecovery policy (Scenarios 5/6). Separate kbase from rules/deviation-rules.drl.
+// The four rules are mutually exclusive and together cover every fact, so exactly one
+// fires. See docs/drools.md.
+
+rule "Pre-release short pick with auto recovery enabled - auto recover"
+    when
+        AutorecoveryDeviationFact(
+            type == RecoveryDeviationType.SHORT_PICK,
+            releaseStage == ReleaseStage.PRE_RELEASE,
+            autoRecoveryEnabled == true
+        )
+    then
+        decisionHolder.setDecision(RecoveryDecision.AUTO_RECOVER);
+        decisionHolder.setRuleName(drools.getRule().getName());
+end
+
+rule "Post-release deviation - manual"
+    when
+        AutorecoveryDeviationFact(releaseStage == ReleaseStage.POST_RELEASE)
+    then
+        decisionHolder.setDecision(RecoveryDecision.MANUAL);
+        decisionHolder.setRuleName(drools.getRule().getName());
+end
+
+rule "Pre-release deviation with auto recovery disabled - manual"
+    when
+        AutorecoveryDeviationFact(releaseStage == ReleaseStage.PRE_RELEASE, autoRecoveryEnabled == false)
+    then
+        decisionHolder.setDecision(RecoveryDecision.MANUAL);
+        decisionHolder.setRuleName(drools.getRule().getName());
+end
+
+rule "Pre-release deviation with no automated recovery procedure - manual"
+    when
+        AutorecoveryDeviationFact(
+            releaseStage == ReleaseStage.PRE_RELEASE,
+            autoRecoveryEnabled == true,
+            type != RecoveryDeviationType.SHORT_PICK
+        )
+    then
+        decisionHolder.setDecision(RecoveryDecision.MANUAL);
+        decisionHolder.setRuleName(drools.getRule().getName());
+end

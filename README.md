@@ -157,6 +157,73 @@ workflow history shows `releaseInventory` followed by `cancelOrder`;
 `GET http://localhost:8082/inventory/reservations/{id}/release` having already run means the
 stock is back to its original count.
 
+## 5. ODM autorecovery scenarios
+
+Scenarios 5 and 6 go straight to `odm-service`, not through `POST /orders`. Each one simulates
+a deviation signal from an upstream fulfilment system. ODM applies its auto-recovery policy and
+the Drools rules, then starts its own Temporal workflow, `AutorecoveryWorkflow`, with ID
+`autorecovery-<deviationKey>` on task queue `odm-autorecovery-queue`. It never uses
+`order-lifecycle-task-queue`. These scenarios need only `odm-service` plus the infrastructure
+(Temporal, odm-postgres, Solace). See [docs/autorecovery.md](docs/autorecovery.md) for the full
+explanation.
+
+### Scenario 5 - Short Pick Auto-Recovery (PRE_RELEASE)
+
+The warehouse picked 3 of 5 units before the order was released. `SHORT_PICK` has
+auto-recovery enabled for `US` (`odm.autorecovery.enabled-markets[SHORT_PICK]=US,IN`), so
+Drools decides `AUTO_RECOVER`. Temporal then finds an alternative through the mock
+Fulfillment Options API, rebooks through the mock Rebook API, and closes the alert.
+
+```bash
+curl -s -X POST http://localhost:8085/deviations/signal \
+  -H 'Content-Type: application/json' \
+  -d '{"deviationKey":"SP-1001","orderId":"order-1001","type":"SHORT_PICK","releaseStage":"PRE_RELEASE",
+       "market":"US","itemId":"ITEM-1","requestedQuantity":5,"pickedQuantity":3,"reason":"Only 3 of 5 units picked"}'
+
+curl -s http://localhost:8085/deviations/SP-1001/recovery
+```
+
+Expected: HTTP 202 with `"decision":"AUTO_RECOVER"`, then `"status":"RESOLVED"`,
+`"resolution":"AUTO_RECOVERED"` and `"alert":{"status":"CLOSED","owner":"AUTORECOVERY",...}`.
+In Temporal UI, workflow `autorecovery-SP-1001` is Completed with result `"AUTO_RECOVERED"`.
+
+Variants that fall back to manual handling:
+- `"itemId":"ITEM-NO-ALTERNATIVE"`: no fulfilment option is found.
+- `"itemId":"ITEM-REBOOK-FAIL"`: the rebook fails.
+- `"market":"GB"`: auto-recovery is disabled for that market, so Drools decides `MANUAL`.
+
+In each case the alert goes to `RCMP` and the workflow waits, as in Scenario 6. Use a new
+`deviationKey` for each attempt, because sending the same key again is treated as a duplicate
+and returns HTTP 200 with `"duplicate":true`.
+
+### Scenario 6 - Provided Service Failure / Manual Resolution (POST_RELEASE)
+
+The last-mile service failed after release. Drools decides `MANUAL`, so there is no
+Fulfillment Options or Rebook call. The workflow opens an alert for RCMP and parks in
+`Workflow.await`, until RCMP's resolution arrives as a Temporal Signal.
+
+```bash
+curl -s -X POST http://localhost:8085/deviations/signal \
+  -H 'Content-Type: application/json' \
+  -d '{"deviationKey":"PSF-2001","orderId":"order-2001","type":"PROVIDED_SERVICE_FAILURE",
+       "releaseStage":"POST_RELEASE","market":"US","reason":"Last-mile carrier could not deliver"}'
+
+curl -s http://localhost:8085/deviations/PSF-2001/recovery
+# -> "status":"AWAITING_MANUAL_RESOLUTION", "alert":{"status":"OPEN","owner":"RCMP",...}
+# Temporal UI: autorecovery-PSF-2001 is Running, waiting.
+
+curl -s -X POST http://localhost:8085/deviations/PSF-2001/manual-resolution \
+  -H 'Content-Type: application/json' \
+  -d '{"resolvedBy":"rcmp-agent-7","note":"Redelivery booked with customer"}'
+
+curl -s http://localhost:8085/deviations/PSF-2001/recovery
+# -> "status":"RESOLVED", "resolution":"MANUALLY_RESOLVED", "alert":{"status":"CLOSED",...}
+```
+
+In Temporal UI, the history shows `WorkflowExecutionSignaled` (`manualResolution`) followed by
+`CloseRecovery`, and the result is `"MANUALLY_RESOLVED"`. If you call manual resolution while a
+deviation is not waiting for it, ODM returns HTTP 409.
+
 ## Troubleshooting
 
 - **Temporal namespace/schema containers keep restarting**: they wait on `temporal-postgresql`

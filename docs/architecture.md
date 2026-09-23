@@ -106,3 +106,20 @@ COMPLETED`
 -> Temporal -> ReleaseInventory -> ORDER_CANCELLED`
 
 See the [README](../README.md) for exact `curl` commands for each scenario.
+
+## ODM autorecovery (Scenarios 5 and 6)
+
+This is an additive ODM capability that sits alongside everything above and changes none of
+it. An upstream deviation signal (`POST /deviations/signal`) is ingested by odm-service. ODM
+applies its own `(deviationType + market)` auto-recovery policy and a separate Drools
+ksession, then starts its **own** Temporal workflow, `AutorecoveryWorkflow`. That workflow runs
+on the `odm-autorecovery-queue` task queue with a worker hosted in odm-service, never on
+order-service's `order-lifecycle-task-queue`.
+
+Two paths:
+- **PRE_RELEASE `SHORT_PICK`:** automated recovery (Fulfillment Options, then Rebook).
+- **POST_RELEASE, or no automated path:** an alert for RCMP, and a durable
+  `Workflow.await` until a manual-resolution Temporal Signal arrives.
+
+The state lives in two new tables, `recovery_deviations` and `recovery_alerts`. Solace is not
+involved. See [autorecovery.md](autorecovery.md).

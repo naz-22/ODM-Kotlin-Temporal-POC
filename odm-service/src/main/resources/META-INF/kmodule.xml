@@ -2,4 +2,9 @@
     <kbase name="deviationKBase" packages="rules">
         <ksession name="deviationKSession"/>
     </kbase>
+    <!-- Separate kbase for the ODM autorecovery policy (Scenarios 5/6), so the
+         order-lifecycle rules above are never evaluated together with it. -->
+    <kbase name="autorecoveryKBase" packages="autorecovery">
+        <ksession name="autorecoveryKSession"/>
+    </kbase>
 </kmodule>
