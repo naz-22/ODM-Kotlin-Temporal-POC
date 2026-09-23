@@ -121,5 +121,8 @@ Two paths:
 - **POST_RELEASE, or no automated path:** an alert for RCMP, and a durable
   `Workflow.await` until a manual-resolution Temporal Signal arrives.
 
-The state lives in two new tables, `recovery_deviations` and `recovery_alerts`. Solace is not
-involved. See [autorecovery.md](autorecovery.md).
+The state lives in two new tables, `recovery_deviations` and `recovery_alerts`. Solace is **not**
+involved in the Temporal orchestration: Temporal alone drives the recovery. Once a deviation
+reaches `RESOLVED`, ODM publishes a `DeviationResolved` event to the Solace topic
+`order/deviation/resolved`. That event is an asynchronous notification for downstream consumers,
+not a step in the recovery. See [autorecovery.md](autorecovery.md).

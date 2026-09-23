@@ -224,6 +224,14 @@ In Temporal UI, the history shows `WorkflowExecutionSignaled` (`manualResolution
 `CloseRecovery`, and the result is `"MANUALLY_RESOLVED"`. If you call manual resolution while a
 deviation is not waiting for it, ODM returns HTTP 409.
 
+### DeviationResolved event (Scenarios 5 and 6)
+
+When a deviation reaches `RESOLVED`, whether auto-recovered or manually resolved, ODM
+publishes a `DeviationResolved` event to the Solace topic `order/deviation/resolved`. A
+demo-only downstream consumer logs each event it receives. Look for
+`Received DeviationResolved event: deviationKey=…, resolution=…` in the odm-service log. See
+[docs/autorecovery.md](docs/autorecovery.md#outgoing-deviationresolved-event).
+
 ## Troubleshooting
 
 - **Temporal namespace/schema containers keep restarting**: they wait on `temporal-postgresql`

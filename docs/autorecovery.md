@@ -27,8 +27,9 @@ Temporal AutorecoveryWorkflow (hosted by odm-service's own worker)
                           closeRecovery (alert CLOSED)
 ```
 
-Solace is not involved in this capability. It remains the event backbone for Scenarios 1-4
-and is not used here as an orchestrator.
+Solace plays no part in the orchestration: Temporal drives the recovery end to end. The only
+Solace use here is the outgoing `DeviationResolved` notification, published after a deviation is
+resolved (see "Outgoing DeviationResolved event" below).
 
 ## Scenario 5 - Short Pick Auto-Recovery
 
@@ -146,11 +147,12 @@ server order-service already uses.
   performs a controlled restart of a run that ended without success.
 - Every Activity is idempotent, because Temporal may retry it.
 
-## Database (odm-postgres, Flyway `V2__autorecovery.sql` + `V3__autorecovery_reconciliation.sql`)
+## Database (odm-postgres, Flyway `V2__autorecovery.sql` + `V3__autorecovery_reconciliation.sql` + `V4__deviation_resolved_event.sql`)
 
 - `recovery_deviations`: the signal, `auto_recovery_enabled`, `decision`, `decision_rule`,
   `status` (`RECEIVED -> AUTO_RECOVERING | AWAITING_MANUAL_RESOLUTION -> RESOLVED`),
-  `resolution`, `resolution_note` and `workflow_id`.
+  `resolution`, `resolution_note` and `workflow_id`. V3 adds `workflow_restarts`, the restart
+  counter. V4 adds `resolved_event_published_at`, the DeviationResolved publish marker.
 - `recovery_alerts`: one row per deviation, with `status` (`OPEN`/`CLOSED`), `owner`
   (`AUTORECOVERY`/`RCMP`), `reason`, `opened_at` and `closed_at`.
 
@@ -230,3 +232,80 @@ Each sweep checks every unresolved deviation older than the stale threshold with
 - **Versioning:** long-waiting workflows would need `Workflow.getVersion()` before any future
   change to the order of Activity calls. This change adds no new calls. The new optional
   `manualReason` input field defaults to `null`, so payloads from existing runs still deserialize.
+
+## Outgoing DeviationResolved event
+
+Once a deviation reaches its terminal `RESOLVED` state, ODM announces it on Solace:
+
+```
+REST  POST /deviations/signal ──> ODM ──> Temporal AutorecoveryWorkflow ──> Activities ──> ODM application service
+                                                                     CloseRecovery: RESOLVED (committed)
+                                                                                    └──> Solace order/deviation/resolved ──> downstream consumers
+```
+
+```json
+{"eventType":"DeviationResolved","eventId":"deviation-resolved-SP-1001","deviationKey":"SP-1001",
+ "orderId":"order-1001","deviationType":"SHORT_PICK","resolution":"AUTO_RECOVERED",
+ "resolvedBy":"AUTORECOVERY","resolvedAt":"…"}
+```
+
+`resolvedBy` is `AUTORECOVERY` for `AUTO_RECOVERED` and `RCMP` for `MANUALLY_RESOLVED`. It names
+the team that owns the alert (the existing `AlertOwner` enum). The individual RCMP resolver's name
+stays in `resolution_note`.
+
+**Why the pattern is REST in, events out**
+- **REST for the incoming signal.** The upstream system needs a synchronous answer: "accepted"
+  (202), "duplicate" (200) or "invalid" (400). REST also makes the upstream system easy to
+  simulate with curl or Postman.
+- **Temporal for the recovery.** Recovery can take seconds, when it's automated, or days, when it
+  waits for RCMP. Temporal makes that durable: retries, restarts, and a Signal-driven wait. It
+  remains the only orchestrator.
+- **Solace for the outcome.** Other systems only need to *know* a deviation was resolved, whenever
+  that happens. A published event lets any number of them subscribe without ODM knowing about
+  them. This is the same pattern the other services use for their business events.
+- **Not a contradiction.** Each part of the flow uses the style that suits it: a request needs a
+  reply, so it's REST; a long-running process needs durability, so it's Temporal; an outcome with
+  unknown listeners suits publish/subscribe, so it's Solace.
+
+**Architecture unchanged**
+- Temporal Activities remain the bridge from the workflow to ODM's application service.
+- ODM keeps its ports and adapters: `DeviationEventPublisherPort` is implemented by
+  `SolaceDeviationEventPublisher`.
+- **Solace is not used between Temporal and ODM.** It carries only this outgoing notification.
+
+**Where the event is published, and why it isn't duplicated**
+- The existing `CloseRecovery` Activity first commits the resolution, then calls
+  `publishResolvedEventOnce`. The workflow code is unchanged.
+- An event is published only for a `RESOLVED` row whose `resolved_event_published_at` (Flyway V4) is
+  still null. That column is set by a conditional UPDATE *after* the publish call returns without
+  an error.
+  - If Temporal retries the Activity after a successful publish, the retry skips publishing.
+  - If the publish fails, the column stays null. The Activity throws and Temporal retries it; the
+    resolution itself is idempotent, so it isn't repeated.
+  - The only remaining duplicate window is a crash between publishing and setting the column. That
+    duplicate carries the same deterministic `eventId` (`deviation-resolved-<key>`), so a consumer
+    can discard it.
+- **What is and isn't guaranteed.** This is neither exactly-once nor guaranteed delivery.
+  - ODM *attempts* to publish at least once per resolution, and never publishes a second time
+    after a recorded success. Any duplicate carries the same deterministic `eventId`.
+  - The POC uses Solace **direct** delivery, like every other publisher in this POC.
+    - When the publish call returns, the Solace client has *accepted* the message; the broker
+      has not confirmed it. A broker-side failure is only reported asynchronously and logged, so
+      the marker can be set for a message that never reached the broker.
+    - Direct messages are not persisted, so a subscriber that is not connected when the event is
+      published never receives it.
+  - If Solace stays down past the Activity's 5 retries, the resolution is kept but the event is
+    never published. The row then shows `RESOLVED` with a null `resolved_event_published_at`.
+    Rows resolved before V4 also have a null marker, because the event did not exist yet.
+- **Out of scope for this POC:** production-grade durable delivery. That would mean guaranteed
+  (persistent) messaging with broker acknowledgements, queues for subscribers, and a
+  transactional outbox with a relay that republishes unpublished events.
+
+**Demo downstream consumer**
+
+`DeviationResolvedDemoConsumer` stands in for a downstream system. It lives in odm-service for
+convenience, but uses its **own** Solace session, so the broker sees it as a separate client. It
+only logs `Received DeviationResolved event: deviationKey=…, resolution=…, resolvedBy=…,
+eventId=…`, and has no business logic. Turn it off with
+`odm.demo.deviation-resolved-consumer.enabled=false` (or the `ODM_DEMO_RESOLVED_CONSUMER_ENABLED`
+environment variable).

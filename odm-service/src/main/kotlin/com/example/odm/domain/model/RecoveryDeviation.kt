@@ -91,7 +91,9 @@ data class RecoveryDeviation(
     val createdAt: Instant,
     val resolvedAt: Instant?,
     // How many times the reconciler restarted a workflow run that ended without success.
-    val workflowRestarts: Int = 0
+    val workflowRestarts: Int = 0,
+    // When the DeviationResolved event was published (null = not yet published).
+    val resolvedEventPublishedAt: Instant? = null
 ) {
 
     init {

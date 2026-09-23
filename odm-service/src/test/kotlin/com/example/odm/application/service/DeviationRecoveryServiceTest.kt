@@ -17,6 +17,8 @@ import com.example.odm.domain.model.RecoveryStatus
 import com.example.odm.domain.model.ReleaseStage
 import com.example.odm.support.InMemoryRecoveryAlertRepository
 import com.example.odm.support.InMemoryRecoveryDeviationRepository
+import com.example.odm.support.RecordingDeviationEventPublisher
+import com.example.odm.domain.model.DeviationResolvedEvent
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.assertThrows
 import org.mockito.kotlin.any
@@ -68,7 +70,8 @@ class DeviationRecoveryServiceTest {
         mapOf(RecoveryDeviationType.SHORT_PICK to setOf("US", "IN")),
         AutoRecoveryProperties.Reconciliation(maxWorkflowRestarts = 2)
     )
-    private val service = DeviationRecoveryService(deviations, alerts, AutorecoveryDecisionEngine(), properties, workflowPort)
+    private val events = RecordingDeviationEventPublisher()
+    private val service = DeviationRecoveryService(deviations, alerts, AutorecoveryDecisionEngine(), properties, workflowPort, events)
 
     private fun shortPick(key: String = "sp-1", market: String = "US") = DeviationSignal(
         key, "order-1", RecoveryDeviationType.SHORT_PICK, ReleaseStage.PRE_RELEASE, market,
@@ -205,7 +208,7 @@ class DeviationRecoveryServiceTest {
         // Simulates a future DRL mistake: the engine is mocked to return the forbidden verdict.
         val brokenRules: AutorecoveryDecisionEngine = mock()
         whenever(brokenRules.decide(any())).thenReturn(RecoveryVerdict(RecoveryDecision.AUTO_RECOVER, "broken rule"))
-        val guarded = DeviationRecoveryService(deviations, alerts, brokenRules, properties, workflowPort)
+        val guarded = DeviationRecoveryService(deviations, alerts, brokenRules, properties, workflowPort, events)
 
         val result = guarded.ingestSignal(providedServiceFailure())
 
@@ -219,7 +222,7 @@ class DeviationRecoveryServiceTest {
         val rules: AutorecoveryDecisionEngine = mock()
         whenever(rules.decide(any())).thenReturn(RecoveryVerdict(RecoveryDecision.AUTO_RECOVER, "some rule"))
 
-        val result = DeviationRecoveryService(deviations, alerts, rules, properties, workflowPort).ingestSignal(shortPick())
+        val result = DeviationRecoveryService(deviations, alerts, rules, properties, workflowPort, events).ingestSignal(shortPick())
 
         assertEquals(RecoveryDecision.AUTO_RECOVER, result.deviation.decision)
         assertEquals("some rule", result.deviation.decisionRule)
@@ -335,7 +338,7 @@ class DeviationRecoveryServiceTest {
             override fun currentState(deviationKey: String) =
                 if (deviationKey == "a") throw IllegalStateException("Temporal unavailable") else workflowPort.currentState(deviationKey)
         }
-        val sweeping = DeviationRecoveryService(deviations, alerts, AutorecoveryDecisionEngine(), properties, flakyPort)
+        val sweeping = DeviationRecoveryService(deviations, alerts, AutorecoveryDecisionEngine(), properties, flakyPort, events)
 
         val outcomes = sweeping.reconcileStale(staleCutoff())
 
@@ -383,5 +386,81 @@ class DeviationRecoveryServiceTest {
         val closed = alerts.rows.getValue("psf-1").closed(Instant.now())
 
         assertThrows<IllegalStateException> { closed.withReason("anything") }
+    }
+
+    // --- DeviationResolved event -------------------------------------------------------
+
+    @Test
+    fun `AUTO_RECOVERED resolution publishes one DeviationResolved event with the expected payload`() {
+        service.ingestSignal(shortPick())
+        service.startAutoRecovery("sp-1")
+        service.closeRecovery("sp-1", RecoveryResolution.AUTO_RECOVERED, "rebooked")
+
+        service.publishResolvedEventOnce("sp-1")
+
+        val event = events.published.single()
+        assertEquals("DeviationResolved", event.eventType)
+        assertEquals("deviation-resolved-sp-1", event.eventId)
+        assertEquals("sp-1", event.deviationKey)
+        assertEquals("order-1", event.orderId)
+        assertEquals(RecoveryDeviationType.SHORT_PICK, event.deviationType)
+        assertEquals(RecoveryResolution.AUTO_RECOVERED, event.resolution)
+        assertEquals(AlertOwner.AUTORECOVERY, event.resolvedBy)
+        assertEquals(deviations.rows.getValue("sp-1").resolvedAt, event.resolvedAt)
+        assertTrue(deviations.rows.getValue("sp-1").resolvedEventPublishedAt != null)
+    }
+
+    @Test
+    fun `MANUALLY_RESOLVED resolution publishes a DeviationResolved event resolved by RCMP`() {
+        service.ingestSignal(providedServiceFailure())
+        service.requestManualResolution("psf-1", "Drools decided MANUAL")
+        service.closeRecovery("psf-1", RecoveryResolution.MANUALLY_RESOLVED, "Resolved by RCMP: done")
+
+        service.publishResolvedEventOnce("psf-1")
+
+        val event = events.published.single()
+        assertEquals(RecoveryDeviationType.PROVIDED_SERVICE_FAILURE, event.deviationType)
+        assertEquals(RecoveryResolution.MANUALLY_RESOLVED, event.resolution)
+        assertEquals(AlertOwner.RCMP, event.resolvedBy)
+    }
+
+    @Test
+    fun `non-terminal states never publish the event`() {
+        service.ingestSignal(shortPick())                               // RECEIVED
+        service.publishResolvedEventOnce("sp-1")
+        service.startAutoRecovery("sp-1")                              // AUTO_RECOVERING
+        service.publishResolvedEventOnce("sp-1")
+        service.requestManualResolution("sp-1", "no alternative")      // AWAITING_MANUAL_RESOLUTION
+        service.publishResolvedEventOnce("sp-1")
+
+        assertEquals(0, events.attempts.get())
+        assertTrue(events.published.isEmpty())
+    }
+
+    @Test
+    fun `repeated publication for the same resolution is skipped once the marker is set`() {
+        service.ingestSignal(shortPick())
+        service.startAutoRecovery("sp-1")
+        service.closeRecovery("sp-1", RecoveryResolution.AUTO_RECOVERED, "rebooked")
+
+        repeat(3) { service.publishResolvedEventOnce("sp-1") } // e.g. Temporal Activity retries
+
+        assertEquals(1, events.published.size)
+        assertEquals(1, events.attempts.get())
+    }
+
+    @Test
+    fun `a failed publish leaves the marker unset so the retry publishes it`() {
+        service.ingestSignal(shortPick())
+        service.startAutoRecovery("sp-1")
+        service.closeRecovery("sp-1", RecoveryResolution.AUTO_RECOVERED, "rebooked")
+        events.failNextPublishes = 1
+
+        assertThrows<IllegalStateException> { service.publishResolvedEventOnce("sp-1") }
+        assertNull(deviations.rows.getValue("sp-1").resolvedEventPublishedAt)
+
+        service.publishResolvedEventOnce("sp-1")
+        assertEquals(1, events.published.size)
+        assertEquals(DeviationResolvedEvent.eventIdFor("sp-1"), events.published.single().eventId)
     }
 }

@@ -15,6 +15,7 @@ happened, without order-service needing to know they exist.
 | payment-service       | `order/payment/succeeded`    | A payment attempt succeeded                        |
 | payment-service       | `order/payment/failed`       | A payment attempt failed                           |
 | order-service          | `order/confirmed`            | The order reached `ORDER_CONFIRMED`                |
+| odm-service            | `order/deviation/resolved`   | An ODM recovery deviation reached `RESOLVED` (see [autorecovery.md](autorecovery.md#outgoing-deviationresolved-event)) |
 
 `order/deviation/detected` from the original architecture sketch was folded into the two
 `.../unavailable` and `.../failed` topics above - ODM subscribes directly to the events that
@@ -32,6 +33,7 @@ stock; it publishes when a reservation actually succeeds, fails, or is released.
 |--------------------------|--------------------------------------------------------------|--------------------------------------------------------------------------------|
 | notification-service     | `order/confirmed`                                             | Records an in-memory "notification processed" result for the order            |
 | odm-service               | `order/inventory/unavailable`, `order/payment/failed`         | Idempotently records a `Deviation` row - **does not** evaluate Drools here    |
+| odm-service (demo consumer) | `order/deviation/resolved`                                  | Demo only: logs each `DeviationResolved` event it receives, on its own Solace session |
 
 ## Why the main lifecycle is still Temporal orchestration
 

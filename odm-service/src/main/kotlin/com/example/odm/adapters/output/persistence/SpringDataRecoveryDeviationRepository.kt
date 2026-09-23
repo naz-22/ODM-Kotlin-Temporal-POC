@@ -11,6 +11,20 @@ interface SpringDataRecoveryDeviationRepository : JpaRepository<RecoveryDeviatio
 
     fun findByStatusNotAndCreatedAtBefore(status: RecoveryStatus, cutoff: Instant): List<RecoveryDeviationEntity>
 
+    // Publish-once marker for DeviationResolved: 1 row updated = recorded now, 0 = already set.
+    @Modifying(clearAutomatically = true)
+    @Query(
+        value = """
+            UPDATE recovery_deviations SET resolved_event_published_at = :at
+            WHERE deviation_key = :deviationKey AND resolved_event_published_at IS NULL
+        """,
+        nativeQuery = true
+    )
+    fun markResolvedEventPublishedIfUnset(
+        @Param("deviationKey") deviationKey: String,
+        @Param("at") at: Instant
+    ): Int
+
     // Conditional atomic increment: 1 row updated = restart allowed, 0 = limit reached.
     @Modifying(clearAutomatically = true)
     @Query(

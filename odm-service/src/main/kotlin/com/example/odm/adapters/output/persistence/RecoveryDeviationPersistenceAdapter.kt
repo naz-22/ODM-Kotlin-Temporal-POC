@@ -43,6 +43,10 @@ class RecoveryDeviationPersistenceAdapter(
     override fun tryRecordWorkflowRestart(deviationKey: String, maxRestarts: Int): Boolean =
         jpaRepository.incrementWorkflowRestartsBelow(deviationKey, maxRestarts) == 1
 
+    @Transactional
+    override fun markResolvedEventPublished(deviationKey: String, at: Instant): Boolean =
+        jpaRepository.markResolvedEventPublishedIfUnset(deviationKey, at) == 1
+
     override fun save(deviation: RecoveryDeviation): RecoveryDeviation {
         jpaRepository.save(toEntity(deviation))
         return deviation
@@ -54,7 +58,8 @@ class RecoveryDeviationPersistenceAdapter(
         pickedQuantity = e.pickedQuantity, reason = e.reason, autoRecoveryEnabled = e.autoRecoveryEnabled,
         decision = e.decision, decisionRule = e.decisionRule, status = e.status, resolution = e.resolution,
         resolutionNote = e.resolutionNote, workflowId = e.workflowId, createdAt = e.createdAt,
-        resolvedAt = e.resolvedAt, workflowRestarts = e.workflowRestarts
+        resolvedAt = e.resolvedAt, workflowRestarts = e.workflowRestarts,
+        resolvedEventPublishedAt = e.resolvedEventPublishedAt
     )
 
     private fun toEntity(d: RecoveryDeviation) = RecoveryDeviationEntity(
@@ -63,6 +68,7 @@ class RecoveryDeviationPersistenceAdapter(
         pickedQuantity = d.pickedQuantity, reason = d.reason, autoRecoveryEnabled = d.autoRecoveryEnabled,
         decision = d.decision, decisionRule = d.decisionRule, status = d.status, resolution = d.resolution,
         resolutionNote = d.resolutionNote, workflowId = d.workflowId, createdAt = d.createdAt,
-        resolvedAt = d.resolvedAt, workflowRestarts = d.workflowRestarts
+        resolvedAt = d.resolvedAt, workflowRestarts = d.workflowRestarts,
+        resolvedEventPublishedAt = d.resolvedEventPublishedAt
     )
 }

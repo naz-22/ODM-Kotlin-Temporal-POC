@@ -72,5 +72,10 @@ class RecoveryDeviationEntity(
     var resolvedAt: Instant?,
 
     @Column(nullable = false)
-    var workflowRestarts: Int
+    var workflowRestarts: Int,
+
+    // Read-only for JPA: written only by the conditional UPDATE in
+    // SpringDataRecoveryDeviationRepository, so an ordinary save() can never reset it.
+    @Column(insertable = false, updatable = false)
+    val resolvedEventPublishedAt: Instant?
 )

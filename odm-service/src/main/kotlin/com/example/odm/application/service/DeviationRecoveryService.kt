@@ -8,12 +8,14 @@ import com.example.odm.application.ports.input.ManualResolutionResult
 import com.example.odm.application.ports.input.RecoveryRecord
 import com.example.odm.application.ports.input.SignalIngestionResult
 import com.example.odm.application.ports.output.AutorecoveryWorkflowPort
+import com.example.odm.application.ports.output.DeviationEventPublisherPort
 import com.example.odm.application.ports.output.WorkflowRunState
 import com.example.odm.application.ports.output.RecoveryAlertRepository
 import com.example.odm.application.ports.output.RecoveryDeviationRepository
 import com.example.odm.configuration.AutoRecoveryProperties
 import com.example.odm.domain.model.AlertOwner
 import com.example.odm.domain.model.AlertStatus
+import com.example.odm.domain.model.DeviationResolvedEvent
 import com.example.odm.domain.model.DeviationSignal
 import com.example.odm.domain.model.RecoveryAlert
 import com.example.odm.domain.model.RecoveryDecision
@@ -42,7 +44,8 @@ class DeviationRecoveryService(
     private val alertRepository: RecoveryAlertRepository,
     private val decisionEngine: AutorecoveryDecisionEngine,
     private val autoRecoveryProperties: AutoRecoveryProperties,
-    private val workflowPort: AutorecoveryWorkflowPort
+    private val workflowPort: AutorecoveryWorkflowPort,
+    private val eventPublisher: DeviationEventPublisherPort
 ) : DeviationRecoveryUseCase {
 
     private val log = LoggerFactory.getLogger(DeviationRecoveryService::class.java)
@@ -244,6 +247,19 @@ class DeviationRecoveryService(
             ?.takeIf { it.status == AlertStatus.OPEN }
             ?.let { alertRepository.save(it.closed(now)) }
         log.info("Deviation {} resolved: {} ({}) - alert CLOSED", deviationKey, resolution, note)
+    }
+
+    // Publishes DeviationResolved once the deviation is RESOLVED and committed. Called by the
+    // CloseRecovery Activity right after closeRecovery(), outside its transaction, so an event is
+    // never announced for a resolution that could still roll back.
+    // At-least-once, de-duplicated: a Temporal retry after a successful publish sees the marker and
+    // skips; a failed publish throws (marker unset) so Temporal retries it. Only a crash between
+    // publish and marker can repeat it - with the same deterministic eventId.
+    fun publishResolvedEventOnce(deviationKey: String) {
+        val deviation = load(deviationKey)
+        if (deviation.status != RecoveryStatus.RESOLVED || deviation.resolvedEventPublishedAt != null) return
+        eventPublisher.publishDeviationResolved(DeviationResolvedEvent.from(deviation))
+        deviationRepository.markResolvedEventPublished(deviationKey, Instant.now())
     }
 
     fun load(deviationKey: String): RecoveryDeviation =

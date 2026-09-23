@@ -41,8 +41,12 @@ class AutorecoveryActivitiesImpl(
     override fun requestManualResolution(deviationKey: String, reason: String) =
         recoveryService.requestManualResolution(deviationKey, reason)
 
-    override fun closeRecovery(deviationKey: String, resolution: RecoveryResolution, note: String) =
+    // Resolve (own transaction, committed on return), then announce it on Solace. Both steps are
+    // idempotent, so a Temporal retry of this Activity neither re-resolves nor re-publishes.
+    override fun closeRecovery(deviationKey: String, resolution: RecoveryResolution, note: String) {
         recoveryService.closeRecovery(deviationKey, resolution, note)
+        recoveryService.publishResolvedEventOnce(deviationKey)
+    }
 
     // Last line of defence for the POST_RELEASE invariant, right where the automation's side
     // effects happen - even a workflow started by hand with crafted AUTO_RECOVER input stops

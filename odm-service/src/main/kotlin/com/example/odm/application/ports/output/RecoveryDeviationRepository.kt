@@ -20,4 +20,8 @@ interface RecoveryDeviationRepository {
     // Returns false once the limit is reached. A single UPDATE, so it never overwrites
     // other columns and two concurrent reconcilers cannot both slip past the limit.
     fun tryRecordWorkflowRestart(deviationKey: String, maxRestarts: Int): Boolean
+
+    // Records that the DeviationResolved event was published. Conditional (only if not yet
+    // set), so it is safe to call again; returns false if it was already recorded.
+    fun markResolvedEventPublished(deviationKey: String, at: Instant): Boolean
 }

@@ -31,6 +31,7 @@ import com.example.odm.domain.model.RecoveryStatus
 import com.example.odm.domain.model.ReleaseStage
 import com.example.odm.support.InMemoryRecoveryAlertRepository
 import com.example.odm.support.InMemoryRecoveryDeviationRepository
+import com.example.odm.support.RecordingDeviationEventPublisher
 import io.temporal.client.WorkflowClientOptions
 import io.temporal.testing.TestEnvironmentOptions
 import io.temporal.testing.TestWorkflowEnvironment
@@ -60,6 +61,7 @@ class AutorecoveryEndToEndTest {
     private val alerts = InMemoryRecoveryAlertRepository()
     private val fulfillmentOptions = spy(MockFulfillmentOptionsClient())
     private val rebook = spy(MockRebookClient())
+    private val events = RecordingDeviationEventPublisher()
     private val properties = AutoRecoveryProperties(
         mapOf(RecoveryDeviationType.SHORT_PICK to setOf("US", "IN")),
         AutoRecoveryProperties.Reconciliation(staleAfterSeconds = 30, maxWorkflowRestarts = 3)
@@ -78,7 +80,8 @@ class AutorecoveryEndToEndTest {
         service = DeviationRecoveryService(
             deviations, alerts, AutorecoveryDecisionEngine(),
             properties,
-            workflowAdapter
+            workflowAdapter,
+            events
         )
         val worker = testEnv.newWorker(AutorecoveryWorkflow.TASK_QUEUE)
         worker.registerWorkflowImplementationTypes(AutorecoveryWorkflowImpl::class.java)
@@ -332,5 +335,46 @@ class AutorecoveryEndToEndTest {
         assertEquals("MANUALLY_RESOLVED", resultOf("h1-1"))
         assertEquals(AlertStatus.CLOSED, alerts.rows.getValue("h1-1").status)
         assertEquals(1, deviations.rows.getValue("h1-1").workflowRestarts)
+    }
+
+    // --- DeviationResolved event through the real workflow + CloseRecovery Activity ----------
+
+    @Test
+    fun `auto recovery publishes exactly one DeviationResolved event after the deviation is RESOLVED`() {
+        service.ingestSignal(shortPick("ev-auto", "ITEM-1"))
+        assertEquals("AUTO_RECOVERED", resultOf("ev-auto"))
+
+        val event = events.published.single()
+        assertEquals("ev-auto", event.deviationKey)
+        assertEquals(RecoveryResolution.AUTO_RECOVERED, event.resolution)
+        assertEquals(AlertOwner.AUTORECOVERY, event.resolvedBy)
+        assertEquals(RecoveryStatus.RESOLVED, deviations.rows.getValue("ev-auto").status)
+    }
+
+    @Test
+    fun `waiting for manual resolution publishes nothing, the resolution publishes exactly one event`() {
+        service.ingestSignal(providedServiceFailure("ev-manual"))
+        awaitStatus("ev-manual", RecoveryStatus.AWAITING_MANUAL_RESOLUTION)
+        assertTrue(events.published.isEmpty())
+
+        service.submitManualResolution("ev-manual", ManualResolution("RCMP", "done"))
+        assertEquals("MANUALLY_RESOLVED", resultOf("ev-manual"))
+
+        val event = events.published.single()
+        assertEquals(RecoveryDeviationType.PROVIDED_SERVICE_FAILURE, event.deviationType)
+        assertEquals(RecoveryResolution.MANUALLY_RESOLVED, event.resolution)
+        assertEquals(AlertOwner.RCMP, event.resolvedBy)
+    }
+
+    @Test
+    fun `a Temporal retry of CloseRecovery after a failed publish resolves once and publishes once`() {
+        events.failNextPublishes = 2 // Solace briefly unavailable: the Activity fails twice, then succeeds
+        service.ingestSignal(shortPick("ev-retry", "ITEM-1"))
+
+        assertEquals("AUTO_RECOVERED", resultOf("ev-retry"))
+        assertEquals(3, events.attempts.get())
+        assertEquals(1, events.published.size)
+        assertEquals(RecoveryResolution.AUTO_RECOVERED, deviations.rows.getValue("ev-retry").resolution)
+        assertEquals(AlertStatus.CLOSED, alerts.rows.getValue("ev-retry").status)
     }
 }
