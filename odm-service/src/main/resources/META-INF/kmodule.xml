@@ -7,4 +7,8 @@
     <kbase name="autorecoveryKBase" packages="autorecovery">
         <ksession name="autorecoveryKSession"/>
     </kbase>
+    <!-- Full-Serve deviation rules: auto-recovery eligibility and alert configuration. -->
+    <kbase name="fullserveKBase" packages="fullserve">
+        <ksession name="fullserveKSession"/>
+    </kbase>
 </kmodule>

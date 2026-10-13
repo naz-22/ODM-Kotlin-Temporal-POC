@@ -1,0 +1,34 @@
+package fullserve;
+
+import com.example.odm.rules.FullServeDeviationFact;
+import com.example.odm.rules.FullServeRuleOutcome;
+
+global FullServeRuleOutcome outcome;
+
+// Full-Serve business rules. Separate kbase from rules/ and autorecovery/. Exactly one
+// auto-recovery rule and exactly one alert rule fire for every Full-Serve fact.
+// See docs/odm-fullserve-walkthrough.md.
+
+rule "Full Serve deviations are not eligible for auto-recovery"
+    when
+        FullServeDeviationFact(serviceType == "FULL_SERVE")
+    then
+        outcome.setAutoRecoveryEligible(false);
+        outcome.getFiredRules().add(drools.getRule().getName());
+end
+
+rule "Alert configuration enabled for the market - schedule consumer alerts"
+    when
+        FullServeDeviationFact(alertConfigEnabled == true)
+    then
+        outcome.setAlertsEnabled(true);
+        outcome.getFiredRules().add(drools.getRule().getName());
+end
+
+rule "No enabled alert configuration for the market - no consumer alerts"
+    when
+        FullServeDeviationFact(alertConfigEnabled == false)
+    then
+        outcome.setAlertsEnabled(false);
+        outcome.getFiredRules().add(drools.getRule().getName());
+end
