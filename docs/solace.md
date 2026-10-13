@@ -16,6 +16,11 @@ happened, without order-service needing to know they exist.
 | payment-service       | `order/payment/failed`       | A payment attempt failed                           |
 | order-service          | `order/confirmed`            | The order reached `ORDER_CONFIRMED`                |
 | odm-service            | `order/deviation/resolved`   | An ODM recovery deviation reached `RESOLVED` (see [autorecovery.md](autorecovery.md#outgoing-deviationresolved-event)) |
+| odm-service (Full Serve) | `odm/out/deviation/created`, `odm/out/deviation/alert/{consumer}/{orderId}`, `odm/out/deviation/closed`, `odm/out/deviation/lcm-closed` | Full-Serve deviation created, consumer alerts, alert closure and O360 closure. Persistent messages, broker-acknowledged (see [odm-fullserve-walkthrough.md](odm-fullserve-walkthrough.md)) |
+
+Full-Serve ingestion uses **queues with client acknowledgement**, not direct subscriptions:
+`ODM.DEVIATION.SIGNAL.Q` (subscribed to `odm/in/deviation/signal/>`) and
+`ODM.DEVIATION.UPDATE.Q` (subscribed to `odm/in/deviation/update/>`), both consumed by odm-service.
 
 `order/deviation/detected` from the original architecture sketch was folded into the two
 `.../unavailable` and `.../failed` topics above - ODM subscribes directly to the events that

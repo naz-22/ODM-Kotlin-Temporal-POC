@@ -232,6 +232,58 @@ demo-only downstream consumer logs each event it receives. Look for
 `Received DeviationResolved event: deviationKey=…, resolution=…` in the odm-service log. See
 [docs/autorecovery.md](docs/autorecovery.md#outgoing-deviationresolved-event).
 
+## 6. ODM Full-Serve deviation lifecycle
+
+A Full-Serve deviation signal from OE/OEP arrives on Solace queue `ODM.DEVIATION.SIGNAL.Q`. ODM
+validates it, ignores it if the order already has an OPEN deviation, and otherwise starts
+`FullServeDeviationWorkflow` (ID `fullserve-deviation-<orderId>`, task queue
+`odm-fullserve-queue`). The workflow creates the OPEN deviation, notifies O360, evaluates the
+Drools rules, publishes consumer alerts to SPM/Dynamics on durable timers, and waits for a
+resolution update. The update arrives on `ODM.DEVIATION.UPDATE.Q` and is delivered as a Temporal
+Signal. The workflow then closes the deviation and publishes the alert closure and the O360
+closure. It never invokes Auto-Recovery. See
+[docs/odm-fullserve-walkthrough.md](docs/odm-fullserve-walkthrough.md) for the step-by-step code
+walkthrough, assumptions, and what is simulated.
+
+Infrastructure plus odm-service only (short alert schedule for a demo):
+
+```bash
+docker compose up -d odm-postgres temporal-postgresql temporal-admin-tools temporal \
+  temporal-create-namespace temporal-ui solace
+cd odm-service && set -a && . ../.env && set +a
+ODM_FULLSERVE_ALERT_SCHEDULE=0s,1m,3m ./mvnw spring-boot:run
+```
+
+Signal through Solace (the broker's REST port stands in for OE), then inspect:
+
+```bash
+curl -s -X POST http://localhost:9000/TOPIC/odm/in/deviation/signal/OE/ORD-7741265 \
+  -H 'Content-Type: application/json' \
+  -d '{"orderId":"ORD-7741265","source":"OE","serviceType":"FULL_SERVE","market":"US",
+       "deviationType":"IKEA_DELAYED_ORDER_STO_ITEM_HANDOUT","reasonCode":"NO_STORE_STOCK",
+       "occurrence":"ORDER_PROCESSING"}'
+
+curl -s 'http://localhost:8085/fullserve/deviations?orderId=ORD-7741265'      # OPEN + notifications
+curl -s 'http://localhost:8085/fullserve/demo/received?orderId=ORD-7741265'  # simulated SPM/Dynamics/O360
+```
+
+Resolve it, then check that it is `CLOSED` with `ALERT_CLOSURE` and `DEVIATION_CLOSED` published:
+
+```bash
+curl -s -X POST http://localhost:9000/TOPIC/odm/in/deviation/update/OE/ORD-7741265 \
+  -H 'Content-Type: application/json' \
+  -d '{"orderId":"ORD-7741265","source":"OE","trigger":"COWORKER","resolutionStatus":"RESOLVED"}'
+
+curl -s 'http://localhost:8085/fullserve/deviations?orderId=ORD-7741265'
+```
+
+The same ingress is also available over REST: `POST /fullserve/deviations/signals` returns
+`202` accepted, `200` duplicate, `400` invalid or `409` retry later. `POST
+/fullserve/deviations/updates` returns `202` signalled, `400` invalid, `404` no OPEN deviation or
+`409` stale. SPM, Dynamics and O360 are **simulated** by a demo subscriber
+(`odm.fullserve.solace.demo-consumer-enabled`). The payload shapes are POC-defined, not an agreed
+contract.
+
 ## Troubleshooting
 
 - **Temporal namespace/schema containers keep restarting**: they wait on `temporal-postgresql`
