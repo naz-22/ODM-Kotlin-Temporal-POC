@@ -1,0 +1,18 @@
+spring:
+  application:
+    name: signalgenerator
+
+solace:
+  java:
+    host: ${SOLACE_HOST:tcp://localhost:55555}
+    msgVpn: ${SOLACE_VPN:default}
+    clientUsername: ${SOLACE_CLIENT_USERNAME:admin}
+    clientPassword: ${SOLACE_CLIENT_PASSWORD:admin}
+
+server:
+  port: ${SERVER_PORT:9001}
+
+signalgenerator:
+  solace:
+    topics:
+      order-deviation-signal: ${ORDER_DEVIATION_SIGNAL_TOPIC:order/deviation/signal}
