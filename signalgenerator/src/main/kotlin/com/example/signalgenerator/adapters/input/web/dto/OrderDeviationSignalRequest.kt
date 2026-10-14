@@ -1,22 +1,19 @@
 package com.example.signalgenerator.adapters.input.web.dto
 
 import com.example.signalgenerator.domain.OrderDeviationSignal
-import jakarta.validation.constraints.Min
 import jakarta.validation.constraints.NotBlank
 
 data class OrderDeviationSignalRequest(
-    @field:NotBlank val deviationKey: String,
     @field:NotBlank val orderId: String,
-    @field:NotBlank val type: String,
-    @field:NotBlank val releaseStage: String,
+    @field:NotBlank val source: String,
+    @field:NotBlank val serviceType: String,
     @field:NotBlank val market: String,
-    @field:NotBlank val itemId: String,
-    @field:Min(0) val requestedQuantity: Int,
-    @field:Min(0) val pickedQuantity: Int,
-    @field:NotBlank val reason: String
+    @field:NotBlank val deviationType: String,
+    @field:NotBlank val reasonCode: String,
+    @field:NotBlank val occurrence: String,
+    @field:NotBlank val reasonCaused: String
 ) {
     fun toDomain() = OrderDeviationSignal(
-        deviationKey, orderId, type, releaseStage, market, itemId,
-        requestedQuantity, pickedQuantity, reason
+        orderId, source, serviceType, market, deviationType, reasonCode, occurrence, reasonCaused
     )
 }

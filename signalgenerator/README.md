@@ -95,19 +95,18 @@ Set via environment variables (defaults in `src/main/resources/application.yml`)
 curl -X POST http://localhost:8086/signals/order-deviation \
   -H 'Content-Type: application/json' \
   -d '{
-    "deviationKey": "dev-1",
     "orderId": "order-123",
-    "type": "SHORT_PICK",
-    "releaseStage": "PICKING",
+    "source": "WMS",
+    "serviceType": "HOME_DELIVERY",
     "market": "SE",
-    "itemId": "item-1",
-    "requestedQuantity": 5,
-    "pickedQuantity": 3,
-    "reason": "Out of stock"
+    "deviationType": "SHORT_PICK",
+    "reasonCode": "OOS",
+    "occurrence": "2026-10-14T10:00:00Z",
+    "reasonCaused": "Out of stock"
   }'
 ```
 
-All string fields are required and non-blank; quantities must be `>= 0`.
+All fields are required, non-blank strings.
 
 ## Tests
 
