@@ -195,9 +195,14 @@ services:
       - system_scaling_maxconnectioncount=100
     ports:
       - "55555:55555" # SMF - what solace.java.host in every service's application.properties points at
+      - "8008:8008"   # Web Messaging for Try Me!
       - "8087:8080"    # Solace web management console (remapped from the image's default 8080)
       - "9000:9000"    # REST messaging (not used by this POC, exposed for completeness)
       - "5550:5550"    # health check port
+    volumes:
+      # Persist broker config/messages (incl. ODM.DEVIATION.*.Q provisioned by odm-service) so
+      # recreating this container (e.g. after a port change) does not wipe the queues.
+      - solace-data:/var/lib/solace
     healthcheck:
       test: ["CMD-SHELL", "curl -sf http://localhost:5550/health-check/guaranteed-active || exit 1"]
       interval: 10s
@@ -216,3 +221,4 @@ volumes:
   payment-postgres-data:
   odm-postgres-data:
   temporal-postgres-data:
+  solace-data:
