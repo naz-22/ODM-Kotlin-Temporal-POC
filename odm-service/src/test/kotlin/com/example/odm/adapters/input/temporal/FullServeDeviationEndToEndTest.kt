@@ -359,6 +359,7 @@ class FullServeDeviationEndToEndTest {
     fun `Full Serve never invokes Auto-Recovery`() {
         service.receiveSignal(signal("ORD-NO-AR"))
         awaitOpenDeviation("ORD-NO-AR")
+        awaitCondition("first alert") { alertsPublished("ORD-NO-AR", 1).size == 2 }
         service.receiveUpdate(update("ORD-NO-AR"))
         assertEquals(FullServeResult.CLOSED, outcomeOf("ORD-NO-AR").result)
 
