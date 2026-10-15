@@ -51,21 +51,11 @@ class SolaceFullServeListener(
     fun start() {
         session = springJCSMPFactory.createSession()
         session.connect()
+        log.info("Full-Serve listener connected to Solace {} (VPN {})",
+            session.getProperty(JCSMPProperties.HOST), session.getProperty(JCSMPProperties.VPN_NAME))
         val destinations = properties.destinations
-        flows += consume(destinations.signalQueue, destinations.signalTopic) { json ->
-            when (fullServe.receiveSignal(objectMapper.readValue(json, FullServeSignalMessage::class.java)).outcome) {
-                IntakeOutcome.ACCEPTED, IntakeOutcome.IGNORED_DUPLICATE -> Outcome.ACCEPTED
-                IntakeOutcome.REJECTED_INVALID -> Outcome.REJECTED
-                IntakeOutcome.RETRY_LATER -> Outcome.FAILED
-            }
-        }
-        flows += consume(destinations.updateQueue, destinations.updateTopic) { json ->
-            when (fullServe.receiveUpdate(objectMapper.readValue(json, FullServeUpdateMessage::class.java)).outcome) {
-                UpdateOutcome.SIGNALLED, UpdateOutcome.NO_OPEN_DEVIATION,
-                UpdateOutcome.STALE_DEVIATION_ID, UpdateOutcome.WORKFLOW_NOT_RUNNING -> Outcome.ACCEPTED
-                UpdateOutcome.REJECTED_INVALID -> Outcome.REJECTED
-            }
-        }
+        flows += consume(destinations.signalQueue, destinations.signalTopic, ::handleSignal)
+        flows += consume(destinations.updateQueue, destinations.updateTopic, ::handleUpdate)
     }
 
     private fun consume(queueName: String, topic: String, handle: (String) -> Outcome): FlowReceiver {
@@ -79,17 +69,10 @@ class SolaceFullServeListener(
         }
         val flow = session.createFlow(object : XMLMessageListener {
             override fun onReceive(message: BytesXMLMessage) {
-                val outcome = try {
-                    handle(textOf(message))
-                } catch (e: JacksonException) {
-                    log.warn("Unreadable message on {} rejected: {}", queueName, e.originalMessage)
-                    Outcome.REJECTED
-                } catch (e: Exception) {
-                    log.error("Technical failure handling message from {} - leaving it for redelivery", queueName, e)
-                    Outcome.FAILED
-                }
+                val outcome = process(queueName, message, handle)
                 try {
                     message.settle(outcome)
+                    log.info("Settled message {} from {} as {}", message.replicationGroupMessageId, queueName, outcome)
                 } catch (e: JCSMPException) {
                     // Unsettled messages are redelivered after the flow reconnects - never lost.
                     log.error("Could not settle message from {} as {}", queueName, outcome, e)
@@ -103,6 +86,47 @@ class SolaceFullServeListener(
         flow.start()
         log.info("Consuming {} (client acknowledgement)", queueName)
         return flow
+    }
+
+    // Decodes and handles one received message; returns how it must be settled. Never throws.
+    internal fun process(queueName: String, message: BytesXMLMessage, handle: (String) -> Outcome): Outcome {
+        log.info("Received message {} from {} (topic={}, deliveryMode={}, redelivered={})", message.replicationGroupMessageId,
+            queueName, message.destination?.name, message.deliveryMode, message.redelivered)
+        return try {
+            handle(textOf(message))
+        } catch (e: JacksonException) {
+            log.warn("Unreadable message on {} rejected: {}", queueName, e.originalMessage)
+            Outcome.REJECTED
+        } catch (e: Exception) {
+            log.error("Technical failure handling message from {} - leaving it for redelivery", queueName, e)
+            Outcome.FAILED
+        }
+    }
+
+    internal fun handleSignal(json: String): Outcome {
+        val message = objectMapper.readValue(json, FullServeSignalMessage::class.java)
+        log.info("Decoded deviation signal for order {} ({} {} {}) - handing to ODM ingress",
+            message.orderId, message.source, message.market, message.deviationType)
+        val result = fullServe.receiveSignal(message)
+        log.info("Deviation signal for order {} -> {} (workflowId={})", result.orderId, result.outcome, result.workflowId)
+        return when (result.outcome) {
+            IntakeOutcome.ACCEPTED, IntakeOutcome.IGNORED_DUPLICATE -> Outcome.ACCEPTED
+            IntakeOutcome.REJECTED_INVALID -> Outcome.REJECTED
+            IntakeOutcome.RETRY_LATER -> Outcome.FAILED
+        }
+    }
+
+    internal fun handleUpdate(json: String): Outcome {
+        val message = objectMapper.readValue(json, FullServeUpdateMessage::class.java)
+        log.info("Decoded deviation update for order {} ({} {} {}) - handing to ODM ingress",
+            message.orderId, message.source, message.trigger, message.resolutionStatus)
+        val result = fullServe.receiveUpdate(message)
+        log.info("Deviation update for order {} -> {} (workflowId={})", result.orderId, result.outcome, result.workflowId)
+        return when (result.outcome) {
+            UpdateOutcome.SIGNALLED, UpdateOutcome.NO_OPEN_DEVIATION,
+            UpdateOutcome.STALE_DEVIATION_ID, UpdateOutcome.WORKFLOW_NOT_RUNNING -> Outcome.ACCEPTED
+            UpdateOutcome.REJECTED_INVALID -> Outcome.REJECTED
+        }
     }
 
     // Local broker only - in a shared environment the queues and their subscriptions are
