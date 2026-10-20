@@ -151,4 +151,36 @@ class OrderLifecycleWorkflowImplTest {
         verify(activities).releaseInventory("order-always-fail")
         verify(activities).cancelOrder("order-always-fail")
     }
+
+    @Test
+    fun `FAIL_ORDER decision after a payment failure releases inventory and fails the order`() {
+        whenever(activities.reserveInventory(any())).thenReturn(InventoryReservationResult.RESERVED)
+        whenever(activities.processPayment(any(), eq(1)))
+            .thenReturn(PaymentAttemptResult(false, "declined"))
+        whenever(activities.getDeviationDecision(any(), eq("PAYMENT_FAILED"), eq(1), any()))
+            .thenReturn(DeviationDecision.FAIL_ORDER)
+
+        val result = newWorkflowStub().startOrder("order-fail-decision")
+
+        assertEquals("ORDER_FAILED", result)
+        verify(activities).releaseInventory("order-fail-decision")
+        verify(activities).failOrder("order-fail-decision")
+        verify(activities, org.mockito.kotlin.never()).cancelOrder(any())
+    }
+
+    @Test
+    fun `ODM returning RETRY forever stops at the safety cap and cancels the order`() {
+        whenever(activities.reserveInventory(any())).thenReturn(InventoryReservationResult.RESERVED)
+        whenever(activities.processPayment(any(), any()))
+            .thenReturn(PaymentAttemptResult(false, "declined"))
+        whenever(activities.getDeviationDecision(any(), eq("PAYMENT_FAILED"), any(), any()))
+            .thenReturn(DeviationDecision.RETRY)
+
+        val result = newWorkflowStub().startOrder("order-retry-forever")
+
+        assertEquals("ORDER_CANCELLED", result)
+        verify(activities, org.mockito.kotlin.times(10)).processPayment(eq("order-retry-forever"), any())
+        verify(activities).releaseInventory("order-retry-forever")
+        verify(activities).cancelOrder("order-retry-forever")
+    }
 }

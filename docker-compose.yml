@@ -182,7 +182,8 @@ services:
   # ---------------------------------------------------------------------------
 
   solace:
-    image: solace/solace-pubsub-standard:latest
+    # Pinned (was :latest) so every developer gets the same broker version.
+    image: solace/solace-pubsub-standard:10.26.0.8894
     container_name: kotlin-ol-solace
     shm_size: 1g
     ulimits:
@@ -191,13 +192,13 @@ services:
         hard: 1048576
     environment:
       - username_admin_globalaccesslevel=admin
-      - username_admin_password=admin
+      - username_admin_password=${SOLACE_ADMIN_PASSWORD:-admin}
       - system_scaling_maxconnectioncount=100
     ports:
       - "55555:55555" # SMF - what solace.java.host in every service's application.properties points at
       - "8008:8008"   # Web Messaging for Try Me!
       - "8087:8080"    # Solace web management console (remapped from the image's default 8080)
-      - "9000:9000"    # REST messaging (not used by this POC, exposed for completeness)
+      - "9000:9000"    # REST messaging - stands in for OE/OEP publishing Full-Serve signals in the demo
       - "5550:5550"    # health check port
     volumes:
       # Persist broker config/messages (incl. ODM.DEVIATION.*.Q provisioned by odm-service) so
@@ -209,6 +210,177 @@ services:
       timeout: 5s
       retries: 30
       start_period: 60s
+
+  # ---------------------------------------------------------------------------
+  # Application services (optional). Only started with the "apps" profile:
+  #   docker compose --profile apps up -d --build
+  # Without the profile, `docker compose up -d` starts the infrastructure only and the
+  # services are run on the host with ./mvnw spring-boot:run (see README).
+  # Inside the compose network, services reach each other by service name, never localhost.
+  # One Dockerfile builds every service; the SERVICE build arg picks the Maven module.
+  # ---------------------------------------------------------------------------
+
+  odm-service:
+    profiles: ["apps"]
+    build:
+      context: .
+      args:
+        SERVICE: odm-service
+    image: kotlin-ol/odm-service:local
+    container_name: kotlin-ol-odm-service
+    restart: on-failure:5
+    environment:
+      SERVER_PORT: "8085"
+      ODM_DB_HOST: odm-postgres
+      ODM_DB_PORT: "5432"
+      POSTGRES_DB: ${ODM_POSTGRES_DB}
+      DB_USERNAME: ${DB_USERNAME}
+      DB_PASSWORD: ${DB_PASSWORD}
+      TEMPORAL_ADDRESS: temporal:7233
+      SOLACE_HOST: tcp://solace:55555
+      # Demo knobs; the defaults are the same as in application.properties.
+      ODM_FULLSERVE_ALERT_SCHEDULE: ${ODM_FULLSERVE_ALERT_SCHEDULE:-0s,2m,10m}
+      ODM_FULLSERVE_ALERT_MARKETS: ${ODM_FULLSERVE_ALERT_MARKETS:-US,GB,DE}
+    ports:
+      - "8085:8085"
+    networks:
+      - default
+      - temporal-network
+    depends_on:
+      odm-postgres:
+        condition: service_healthy
+      solace:
+        condition: service_healthy
+      temporal-create-namespace:
+        condition: service_completed_successfully
+    healthcheck: &app-healthcheck
+      # No actuator in this POC: healthy = the HTTP port accepts connections, which Spring
+      # Boot opens only after the context (DB migrations, Solace session, Temporal workers) is up.
+      test: ["CMD-SHELL", "bash -c '</dev/tcp/127.0.0.1/$${SERVER_PORT}' || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+      start_period: 30s
+    stop_grace_period: 30s
+
+  inventory-service:
+    profiles: ["apps"]
+    build:
+      context: .
+      args:
+        SERVICE: inventory-service
+    image: kotlin-ol/inventory-service:local
+    container_name: kotlin-ol-inventory-service
+    restart: on-failure:5
+    environment:
+      SERVER_PORT: "8082"
+      INVENTORY_DB_HOST: inventory-postgres
+      INVENTORY_DB_PORT: "5432"
+      POSTGRES_DB: ${INVENTORY_POSTGRES_DB}
+      DB_USERNAME: ${DB_USERNAME}
+      DB_PASSWORD: ${DB_PASSWORD}
+      SOLACE_HOST: tcp://solace:55555
+    ports:
+      - "8082:8082"
+    depends_on:
+      inventory-postgres:
+        condition: service_healthy
+      solace:
+        condition: service_healthy
+    healthcheck: *app-healthcheck
+    stop_grace_period: 30s
+
+  payment-service:
+    profiles: ["apps"]
+    build:
+      context: .
+      args:
+        SERVICE: payment-service
+    image: kotlin-ol/payment-service:local
+    container_name: kotlin-ol-payment-service
+    restart: on-failure:5
+    environment:
+      SERVER_PORT: "8083"
+      PAYMENT_DB_HOST: payment-postgres
+      PAYMENT_DB_PORT: "5432"
+      POSTGRES_DB: ${PAYMENT_POSTGRES_DB}
+      DB_USERNAME: ${DB_USERNAME}
+      DB_PASSWORD: ${DB_PASSWORD}
+      SOLACE_HOST: tcp://solace:55555
+    ports:
+      - "8083:8083"
+    depends_on:
+      payment-postgres:
+        condition: service_healthy
+      solace:
+        condition: service_healthy
+    healthcheck: *app-healthcheck
+    stop_grace_period: 30s
+
+  notification-service:
+    profiles: ["apps"]
+    build:
+      context: .
+      args:
+        SERVICE: notification-service
+    image: kotlin-ol/notification-service:local
+    container_name: kotlin-ol-notification-service
+    restart: on-failure:5
+    environment:
+      SERVER_PORT: "8084"
+      SOLACE_HOST: tcp://solace:55555
+    ports:
+      - "8084:8084"
+    depends_on:
+      solace:
+        condition: service_healthy
+    healthcheck: *app-healthcheck
+    stop_grace_period: 30s
+
+  order-service:
+    profiles: ["apps"]
+    build:
+      context: .
+      args:
+        SERVICE: order-service
+    image: kotlin-ol/order-service:local
+    container_name: kotlin-ol-order-service
+    restart: on-failure:5
+    environment:
+      SERVER_PORT: "8081"
+      ORDER_DB_HOST: order-postgres
+      ORDER_DB_PORT: "5432"
+      POSTGRES_DB: ${ORDER_POSTGRES_DB}
+      DB_USERNAME: ${DB_USERNAME}
+      DB_PASSWORD: ${DB_PASSWORD}
+      TEMPORAL_ADDRESS: temporal:7233
+      SOLACE_HOST: tcp://solace:55555
+      INVENTORY_SERVICE_URL: http://inventory-service:8082
+      PAYMENT_SERVICE_URL: http://payment-service:8083
+      ODM_SERVICE_URL: http://odm-service:8085
+      TEMPORAL_DEMO_DELAY_ENABLED: ${TEMPORAL_DEMO_DELAY_ENABLED:-true}
+      TEMPORAL_DEMO_DELAY_SECONDS: ${TEMPORAL_DEMO_DELAY_SECONDS:-10}
+    ports:
+      - "8081:8081"
+    networks:
+      - default
+      - temporal-network
+    depends_on:
+      order-postgres:
+        condition: service_healthy
+      solace:
+        condition: service_healthy
+      temporal-create-namespace:
+        condition: service_completed_successfully
+      # Its Activities call these three over REST.
+      inventory-service:
+        condition: service_healthy
+      payment-service:
+        condition: service_healthy
+      odm-service:
+        condition: service_healthy
+    healthcheck: *app-healthcheck
+    stop_grace_period: 30s
 
 networks:
   temporal-network:

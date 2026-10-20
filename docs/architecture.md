@@ -75,9 +75,8 @@ enforces `canTransitionTo()` before writing anything.
 
 ## Business-event integration (Solace)
 
-See [solace.md](solace.md) for topics, publishers, and consumers. In short: inventory-service
-and payment-service publish what happened to them; notification-service and odm-service react
-to it. Order-service's workflow never depends on any of that being consumed before it can move
+See [solace.md](solace.md) for topics, publishers, and consumers. In short: inventory-, payment- and
+order-service publish what happened to them; notification-service and odm-service react to it. Order-service's workflow never depends on any of that being consumed before it can move
 forward.
 
 ## ODM and Drools
@@ -90,8 +89,8 @@ synchronous decisions coexist" in solace.md for how the two paths converge safel
 ## Happy path vs. failure paths
 
 **Happy path** - `customer-1` / `PROD-1`:
-`ORDER_PLACED -> VALIDATING -> INVENTORY_RESERVED -> PAYMENT_CONFIRMED -> ORDER_CONFIRMED ->
-COMPLETED`
+`ORDER_PLACED -> VALIDATING -> INVENTORY_RESERVATION_PENDING -> INVENTORY_RESERVED ->
+PAYMENT_PENDING -> PAYMENT_CONFIRMED -> ORDER_CONFIRMED -> NOTIFICATION_PENDING -> COMPLETED`
 
 **Inventory failure** - `PROD-OUT-OF-STOCK`:
 `InventoryUnavailable -> Solace (observed) & ODM decision endpoint (authoritative) -> Drools:
@@ -118,7 +117,7 @@ order-service's `order-lifecycle-task-queue`.
 
 Two paths:
 - **PRE_RELEASE `SHORT_PICK`:** automated recovery (Fulfillment Options, then Rebook).
-- **POST_RELEASE, or no automated path:** an alert for RCMP, and a durable
+- **POST_RELEASE, no automated path, or automated recovery failed:** an alert for RCMP, and a durable
   `Workflow.await` until a manual-resolution Temporal Signal arrives.
 
 The state lives in two new tables, `recovery_deviations` and `recovery_alerts`. Solace is **not**
@@ -126,3 +125,16 @@ involved in the Temporal orchestration: Temporal alone drives the recovery. Once
 reaches `RESOLVED`, ODM publishes a `DeviationResolved` event to the Solace topic
 `order/deviation/resolved`. That event is an asynchronous notification for downstream consumers,
 not a step in the recovery. See [autorecovery.md](autorecovery.md).
+
+## ODM Full-Serve deviation lifecycle
+
+A third, independent flow inside odm-service. OE/OEP publish deviation signals and resolution
+updates (O360 is also accepted as an update source) to Solace; ODM consumes them from two queues (`ODM.DEVIATION.SIGNAL.Q`,
+`ODM.DEVIATION.UPDATE.Q`) with client acknowledgement, validates them, and starts or signals one
+`FullServeDeviationWorkflow` per order (`fullserve-deviation-<orderId>`) on its own task queue,
+`odm-fullserve-queue`. The workflow owns the whole deviation: create OPEN, notify O360, Drools
+rules (`fullserveKSession`), consumer alerts to SPM/Dynamics on durable timers, a Signal-driven
+wait for the resolution, closure and closure notifications. It never starts an
+`AutorecoveryWorkflow`. State lives in `fullserve_deviations` and `fullserve_notifications`
+(Flyway V5). O360, SPM and Dynamics are simulated. See
+[odm-fullserve-walkthrough.md](odm-fullserve-walkthrough.md).

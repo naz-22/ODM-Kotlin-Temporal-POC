@@ -12,7 +12,8 @@ business rules, alert consumers, and close the deviation on a resolution update.
 topics and alert configuration are POC assumptions; see
 [Assumptions and open questions](#assumptions-and-open-questions) and [Design choices](#design-choices).
 
-Paths below are relative to `odm-service/src/main/kotlin/com/example/odm/`.
+Kotlin paths below are relative to `odm-service/src/main/kotlin/com/example/odm/`; `resources/...`
+paths are relative to `odm-service/src/main/`.
 
 ## The flow in one picture
 
@@ -128,11 +129,13 @@ sequenceDiagram
         Note over WF: pending alert timers are abandoned, remaining alerts skipped
         WF->>ACT: CloseDeviation
         ACT->>DB: UPDATE ... CLOSED WHERE status = 'OPEN'
-        WF->>ACT: PublishAlertClosure (consumers that received an alert)
-        ACT->>OUT: DeviationClosed -> odm/out/deviation/closed (SPM / Dynamics)
+        opt at least one consumer alert was published
+            WF->>ACT: PublishAlertClosure (consumers that received an alert)
+            ACT->>OUT: DeviationClosed -> odm/out/deviation/closed (SPM / Dynamics)
+        end
         WF->>ACT: NotifyDeviationClosed
         ACT->>OUT: DeviationClosedLcm -> odm/out/deviation/lcm-closed (O360)
-        WF-->>T: completes: {result: CLOSED, alertsPublished: n}
+        WF-->>T: completes: {deviationId, result: CLOSED, alertsPublished: n}
     end
 ```
 
@@ -235,7 +238,7 @@ direct-mode publishers in this repository do not wait for the broker in this way
 
 - **Durable waiting.** A deviation can stay OPEN for days. `Workflow.await` keeps that state in
   Temporal's history, not in memory or a polling job. Restarting `odm-service` loses nothing,
-  which was verified live (below).
+  which was checked in manual live runs (below; not covered by automated tests).
 - **Durable timers.** Alert schedules are server-side timers. If they fall due while no worker is
   running, they fire as soon as one reconnects. They are cancelled simply by the workflow moving
   on when it closes.
@@ -247,20 +250,21 @@ direct-mode publishers in this repository do not wait for the broker in this way
 
 ## Running it locally
 
-Prerequisites, ports and the infrastructure are as described in the [README](../README.md).
-Full Serve needs only `odm-service` plus `odm-postgres`, Temporal and Solace:
+Prerequisites, ports and both ways of running are in the [README](../README.md#running-locally).
+Full Serve needs only `odm-service` plus `odm-postgres`, Temporal and Solace. For a short demo
+alert schedule, set `ODM_FULLSERVE_ALERT_SCHEDULE=0s,1m,3m` in `.env` first.
 
 ```bash
 cp .env.example .env
+# Option A - in Docker:
+docker compose --profile apps up -d --build odm-service
+# Option B - infrastructure in Docker, odm-service on the host:
 docker compose up -d odm-postgres temporal-postgresql temporal-admin-tools temporal \
   temporal-create-namespace temporal-ui solace
-# wait until `docker compose ps` shows solace and odm-postgres healthy, then:
-cd odm-service
-set -a; . ../.env; set +a
-ODM_FULLSERVE_ALERT_SCHEDULE=0s,1m,3m ./mvnw spring-boot:run   # short schedule for a demo
+cd odm-service && set -a && . ../.env && set +a && ./mvnw spring-boot:run
 ```
 
-On startup the log shows `Migrating schema "public" to version "5 - fullserve deviation"` (first
+On startup the log (Option A: `docker compose --profile apps logs -f odm-service`) shows `Migrating schema "public" to version "5 - fullserve deviation"` (first
 run only), `Provisioned queue ODM.DEVIATION.SIGNAL.Q ...` and
 `Consuming ODM.DEVIATION.SIGNAL.Q (client acknowledgement)`.
 
@@ -321,13 +325,13 @@ sent.
 
 ### Configuration
 
-| Property (env var) | Default | Meaning |
+| Property (env var) | Default (application.properties) | Meaning |
 |---|---|---|
 | `odm.fullserve.alerts.enabled-markets` (`ODM_FULLSERVE_ALERT_MARKETS`) | `US,GB,DE` | markets with an enabled alert configuration (demo values) |
 | `odm.fullserve.alerts.consumers` | `SPM,DYNAMICS` | consumers alerted |
 | `odm.fullserve.alerts.schedule` (`ODM_FULLSERVE_ALERT_SCHEDULE`) | `0s,2m,10m` | when each alert falls due after creation (demo values) |
 | `odm.fullserve.contract.deviation-types` / `reason-codes` / `occurrences` | POC Full Serve values | accepted enumerations |
-| `odm.fullserve.destinations.*` | POC queue and topic names | every queue and topic |
+| `odm.fullserve.destinations.*` (`ODM_FULLSERVE_SIGNAL_QUEUE`, `ODM_FULLSERVE_UPDATE_QUEUE` for the queues) | POC queue and topic names | every queue and topic |
 | `odm.fullserve.solace.listener-enabled` (`ODM_FULLSERVE_LISTENER_ENABLED`) | `true` | consume the two queues |
 | `odm.fullserve.solace.provision-queues` (`ODM_FULLSERVE_PROVISION_QUEUES`) | `true` | **local broker only**: create the queues and topic subscriptions |
 | `odm.fullserve.solace.demo-consumer-enabled` (`ODM_FULLSERVE_DEMO_CONSUMER_ENABLED`) | `true` | simulated SPM/Dynamics/O360 subscriber |
@@ -341,15 +345,17 @@ the queues provisioned with an appropriate max-redelivery count, redelivery dela
 
 | Area | Status |
 |---|---|
-| Temporal workflow, timers, Signals, retries | Real. Unit/E2E tests on the time-skipping test server, and live against the docker-compose Temporal server. |
-| Postgres persistence, V5 migration, partial unique index | Real. Live against `odm-postgres` (V5 applied on top of an existing V1-V4 schema; index behaviour checked with SQL). Tests use an in-memory double with the same uniqueness rules. |
-| Solace ingestion (queues, client ack, settlement) and publishing (persistent, broker ack) | Real against the local docker broker. Not tested against a shared or production broker. |
+| Temporal workflow, timers, Signals, retries | Real. Automated tests on the time-skipping test server; manual live runs against the docker-compose Temporal server. |
+| Postgres persistence, V5 migration, partial unique index | Real. Manual live runs against `odm-postgres` (V5 applied on top of an existing V1-V4 schema; index behaviour checked with SQL). Automated tests use an in-memory double with the same uniqueness rules. |
+| Solace ingestion (queues, client ack, settlement) and publishing (persistent, broker ack) | Real against the local docker broker in manual live runs (automated tests mock the Solace messages). Not tested against a shared or production broker. |
 | OE / OEP publishers | **Simulated** with `curl` to the broker's REST port, or with the REST endpoints. |
 | SPM, Dynamics, O360 | **Simulated.** `FullServeDemoConsumer` proves broker delivery to *a* subscriber. No real consumer received or processed anything. |
 | Drools rules | Real Drools evaluation. The rule *content* is a POC assumption (see below). |
 | Message payload shapes (inbound and outbound) | **POC-defined.** No agreed contract was available. |
 
-Live run results (local docker-compose, alert schedule `0s,1m,3m`):
+Results of an earlier manual live run by the developer (local docker-compose, alert schedule
+`0s,1m,3m`; not reproducible from automated tests). The later scripted
+Docker run is recorded in the README's verification status.
 
 - A signal published to `odm/in/deviation/signal/OE/ORD-LIVE-1` produced an OPEN row, then
   `DeviationCreated`, then alert #1 to SPM and Dynamics. Every publish was broker-acknowledged and
@@ -420,8 +426,8 @@ POC assumptions. Each is reversible and needs confirmation:
 ## Known gaps
 
 - No Click & Collect, no auto-recovery branch (by design), and no `targetGroup`.
-- Settling `FAILED` redelivers immediately. The locally provisioned queue has unlimited
-  redelivery and no delay, so a long Temporal outage causes a tight redelivery loop. Configure a
+- Settling `FAILED` redelivers immediately. The locally provisioned queue uses the broker
+  defaults (`provision()` sets no redelivery limit or delay), so a long Temporal outage causes a tight redelivery loop. Configure a
   redelivery delay and limit on real queues.
 - Orphan case: if an operator terminates a workflow while its deviation is OPEN, the row stays
   OPEN. Later signals are ignored as duplicates and updates return `WORKFLOW_NOT_RUNNING`. There

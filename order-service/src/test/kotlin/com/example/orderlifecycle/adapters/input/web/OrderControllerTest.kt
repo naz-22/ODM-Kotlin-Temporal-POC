@@ -19,8 +19,8 @@ import java.time.Instant
 import java.util.UUID
 
 // Web-layer slice test: no DB, no Temporal, no Solace - just the REST contract.
-// This is deliberately fast and is what should run on every commit; the Temporal
-// and full end-to-end scenarios are the ones that need docker-compose infra up.
+// The workflow is covered by OrderLifecycleWorkflowImplTest on Temporal's in-memory
+// test server; only the live demo scenarios in the README need the docker-compose stack.
 @WebMvcTest(OrderController::class)
 class OrderControllerTest {
 

@@ -1,8 +1,8 @@
 # Solace in this POC
 
 Solace PubSub+ is the asynchronous **business-event backbone**. It is intentionally *not*
-on the critical path of the order lifecycle - Temporal owns that path end-to-end via direct
-REST calls to Activities. Solace exists for services that want to react to something that
+on the critical path of the order lifecycle - Temporal owns that path end-to-end via Activities
+that make direct REST calls. Solace exists for services that want to react to something that
 happened, without order-service needing to know they exist.
 
 ## Publisher services and topics
@@ -39,6 +39,8 @@ stock; it publishes when a reservation actually succeeds, fails, or is released.
 | notification-service     | `order/confirmed`                                             | Records an in-memory "notification processed" result for the order            |
 | odm-service               | `order/inventory/unavailable`, `order/payment/failed`         | Idempotently records a `Deviation` row - **does not** evaluate Drools here    |
 | odm-service (demo consumer) | `order/deviation/resolved`                                  | Demo only: logs each `DeviationResolved` event it receives, on its own Solace session |
+| odm-service (Full Serve) | queues `ODM.DEVIATION.SIGNAL.Q`, `ODM.DEVIATION.UPDATE.Q` | Validates signals/updates and starts or signals `FullServeDeviationWorkflow` (client ack) |
+| odm-service (Full-Serve demo consumer) | `odm/out/deviation/>` | Demo only: simulated SPM/Dynamics/O360 on its own session; `GET /fullserve/demo/received` |
 
 ## Why the main lifecycle is still Temporal orchestration
 
@@ -76,7 +78,8 @@ When inventory is unavailable, two things happen almost simultaneously:
    evaluates Drools or overwrites a decision that already exists.
 
 Because both paths write to the same key with an idempotent "insert if absent" semantic,
-whichever one arrives first wins, and the other is a no-op. There is no race that can produce
+the row is created exactly once. If the Solace path created it first, the decision endpoint writes
+its decision into that same row; a Solace event arriving later is a no-op. There is no race that can produce
 two different decisions, and no reason to ever make the decision endpoint block on message
 consumption.
 
@@ -88,9 +91,18 @@ meant for local development) with:
 - `55555` - SMF, what every service's `solace.java.host` points at
 - `8087` - web management console (remapped from the image's default `8080` so it never
   collides with Temporal UI, which also defaults to `8080`)
-- `9000` - REST messaging (exposed for completeness; unused by this POC)
+- `9000` - REST messaging; the Full-Serve demo uses it to stand in for OE/OEP publishing
+- `8008` - Web Messaging (used by the broker's "Try Me!" page)
 - `5550` - health check
 
-All services connect to the broker's default message-VPN (`default`) with the default,
-unauthenticated `default` client username - fine for local dev, not something to carry into
-a real deployment.
+All services connect to the broker's default message-VPN (`default`) with the `default`
+client username and an empty password (the defaults in each `application.properties`) - fine for local dev, not something to carry into
+a real deployment. Services run on the host use `tcp://localhost:55555` (the default); the
+containerised services (`docker compose --profile apps`) get `SOLACE_HOST=tcp://solace:55555`.
+
+To use an external or shared broker instead, set `SOLACE_HOST`, `SOLACE_VPN`,
+`SOLACE_CLIENT_USERNAME` and `SOLACE_CLIENT_PASSWORD` for every service, and for odm-service
+also `ODM_FULLSERVE_PROVISION_QUEUES=false`, `ODM_FULLSERVE_DEMO_CONSUMER_ENABLED=false` and
+`ODM_DEMO_RESOLVED_CONSUMER_ENABLED=false`.
+The two Full-Serve queues and their topic subscriptions must then be provisioned on that
+broker (see [odm-fullserve-walkthrough.md](odm-fullserve-walkthrough.md#configuration)).

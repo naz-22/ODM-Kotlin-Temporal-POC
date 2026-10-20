@@ -16,8 +16,6 @@
 		<java.version>21</java.version>
 		<kotlin.version>2.3.21</kotlin.version>
 		<solace-spring-boot.version>6.0.1</solace-spring-boot.version>
-		<!-- Drools/KIE version - could not be verified against Maven Central in this
-		     sandbox (no network access); confirm/adjust before a real build. -->
 		<drools.version>9.44.0.Final</drools.version>
 		<!-- Same Temporal SDK version order-service already uses. -->
 		<temporal.version>1.31.0</temporal.version>
@@ -72,8 +70,8 @@
 			<scope>runtime</scope>
 		</dependency>
 
-		<!-- ODM's genuine rules engine. drools-compiler builds the KieContainer from
-		     the .drl source at src/main/resources/rules on the classpath. -->
+		<!-- ODM's genuine rules engine. drools-compiler builds the KieContainer from the
+		     .drl sources declared in META-INF/kmodule.xml (rules/, autorecovery/, fullserve/). -->
 		<dependency>
 			<groupId>org.drools</groupId>
 			<artifactId>drools-core</artifactId>

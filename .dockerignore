@@ -1,0 +1,12 @@
+# Only POMs, the Maven wrapper and each module's src/ are needed to build an image.
+.git
+.idea
+*.iml
+**/target
+**/.mvn/wrapper/maven-wrapper.jar
+.env
+*.zip
+docs
+scripts
+dynamicconfig
+**/*.md

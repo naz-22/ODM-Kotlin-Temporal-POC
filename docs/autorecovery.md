@@ -3,7 +3,7 @@
 This is an ODM-only extension. It does not touch the order lifecycle (Scenarios 1-4):
 order-service, its `OrderLifecycleWorkflow`, `order-lifecycle-task-queue`,
 `POST /deviations/decision`, `deviation-rules.drl`, the `deviations` table and the Solace
-listener all behave exactly as before.
+listener are not affected by it.
 
 ```
 Upstream OE / fulfilment system            (simulated with curl / Postman)
@@ -97,7 +97,8 @@ Fulfillment Options or Rebook** on this path, and tests verify that.
    does no polling and runs no timer. It can wait for hours or days and survives worker
    restarts, because its state is rebuilt from the event history.
 3. RCMP resolves the case: `POST /deviations/{deviationKey}/manual-resolution`.
-4. ODM checks that the deviation is `AWAITING_MANUAL_RESOLUTION` (otherwise HTTP 409) and
+4. ODM checks that the deviation is `AWAITING_MANUAL_RESOLUTION` (otherwise HTTP 409; 404 for an
+   unknown key; 409 also when the workflow is not running, which triggers reconciliation) and
    sends the **Temporal Signal** `manualResolution` to workflow `autorecovery-<deviationKey>`.
 5. Temporal records `WorkflowExecutionSignaled` and runs the signal handler, which stores the
    payload. The `await` condition becomes true and the workflow resumes.
@@ -111,10 +112,10 @@ and together they cover every possible fact:
 
 | Rule | Condition | Decision |
 |------|-----------|----------|
-| Pre-release short pick with auto recovery enabled | `SHORT_PICK`, `PRE_RELEASE`, enabled | `AUTO_RECOVER` |
-| Post-release deviation | `POST_RELEASE` | `MANUAL` |
-| Pre-release deviation with auto recovery disabled | `PRE_RELEASE`, not enabled | `MANUAL` |
-| Pre-release deviation with no automated recovery procedure | `PRE_RELEASE`, enabled, not `SHORT_PICK` | `MANUAL` |
+| Pre-release short pick with auto recovery enabled - auto recover | `SHORT_PICK`, `PRE_RELEASE`, enabled | `AUTO_RECOVER` |
+| Post-release deviation - manual | `POST_RELEASE` | `MANUAL` |
+| Pre-release deviation with auto recovery disabled - manual | `PRE_RELEASE`, not enabled | `MANUAL` |
+| Pre-release deviation with no automated recovery procedure - manual | `PRE_RELEASE`, enabled, not `SHORT_PICK` | `MANUAL` |
 
 The name of the rule that fired is stored in `recovery_deviations.decision_rule`.
 
@@ -132,14 +133,14 @@ The name of the rule that fired is stored in `recovery_deviations.decision_rule`
 | Activities | `StartAutoRecovery`, `FindFulfillmentOption`, `RebookOrder`, `RequestManualResolution`, `CloseRecovery` |
 | Result | `AUTO_RECOVERED` or `MANUALLY_RESOLVED` |
 
-odm-service now needs Temporal at `TEMPORAL_ADDRESS` (default `127.0.0.1:7233`), the same
+odm-service needs Temporal at `TEMPORAL_ADDRESS` (default `127.0.0.1:7233`), the same
 server order-service already uses.
 
 ## Idempotency
 
 - `deviation_key` is the primary key of `recovery_deviations`. The row is inserted with
-  `ON CONFLICT DO NOTHING`, so a duplicate signal never creates a second row and never runs
-  Drools a second time. The response then has `"duplicate": true` and HTTP 200 instead of 202.
+  `ON CONFLICT DO NOTHING`, so a duplicate signal never creates a second row. A duplicate that
+  arrives after the first row is stored does not run Drools again. The response then has `"duplicate": true` and HTTP 200 instead of 202.
 - The workflow ID is derived from `deviation_key`, and the start uses
   `WORKFLOW_ID_REUSE_POLICY_REJECT_DUPLICATE`, so Temporal itself refuses a second run.
 - A duplicate signal never makes a new decision. It runs the same reconciliation as the
@@ -150,7 +151,8 @@ server order-service already uses.
 ## Database (odm-postgres, Flyway `V2__autorecovery.sql` + `V3__autorecovery_reconciliation.sql` + `V4__deviation_resolved_event.sql`)
 
 - `recovery_deviations`: the signal, `auto_recovery_enabled`, `decision`, `decision_rule`,
-  `status` (`RECEIVED -> AUTO_RECOVERING | AWAITING_MANUAL_RESOLUTION -> RESOLVED`),
+  `status` (`RECEIVED -> AUTO_RECOVERING | AWAITING_MANUAL_RESOLUTION`; `AUTO_RECOVERING ->
+  AWAITING_MANUAL_RESOLUTION | RESOLVED`; `AWAITING_MANUAL_RESOLUTION -> RESOLVED`),
   `resolution`, `resolution_note` and `workflow_id`. V3 adds `workflow_restarts`, the restart
   counter. V4 adds `resolved_event_published_at`, the DeviationResolved publish marker.
 - `recovery_alerts`: one row per deviation, with `status` (`OPEN`/`CLOSED`), `owner`
@@ -167,7 +169,7 @@ The same data is available over REST at `GET /deviations/{deviationKey}/recovery
 
 ## Demo commands
 
-See the README section "ODM autorecovery scenarios" for the copy-paste curl commands.
+See the README section "Flow 2 - Auto-Recovery (Scenarios 5-6)" for the copy-paste curl commands.
 
 In Temporal UI (http://localhost:8080 -> Workflows), search for `autorecovery-<deviationKey>`.
 - **Scenario 5:** status `Completed`, result `"AUTO_RECOVERED"`. The history shows
@@ -180,7 +182,7 @@ In Temporal UI (http://localhost:8080 -> Workflows), search for `autorecovery-<d
 
 ## Reliability: reconciliation, controlled restart, POST_RELEASE invariant
 
-### What Temporal reports, and what ODM does (verified against Temporal 1.31)
+### What Temporal reports, and what ODM does (covered by `AutorecoveryEndToEndTest` on Temporal's in-memory test server, SDK 1.31)
 
 `TemporalAutorecoveryWorkflowAdapter.currentState` calls `WorkflowStub.describe()` for
 `autorecovery-<deviationKey>`, which reports the **latest run**:
@@ -208,10 +210,11 @@ If the failed run had already received an RCMP resolution but failed while closi
 RCMP resubmits `manual-resolution` to the new run.
 
 ### Configuration (`odm.autorecovery.reconciliation.*`)
-`enabled` (default `false` when unset; `application.properties` turns it on via
-`ODM_RECONCILIATION_ENABLED`), `interval-ms=30000`, `stale-after-seconds=30`,
-`max-workflow-restarts=3`. Activity retries remain bounded at 5 attempts. Unit tests never
-start a Spring context, so the scheduler never runs in them; they call the reconciler directly.
+`enabled` (`false` when the property is unset; `application.properties` sets it to `true`, and
+`ODM_RECONCILIATION_ENABLED=false` turns it off), `interval-ms=30000` (also the initial delay),
+`stale-after-seconds=30`, `max-workflow-restarts=3`. Activity retries remain bounded at 5
+attempts. The Auto-Recovery tests start no Spring context and call the reconciler directly, so
+the scheduler never runs in them.
 Each sweep checks every unresolved deviation older than the stale threshold with one
 `describe` call. That's fine for a POC; a production version would page through the results.
 
@@ -230,8 +233,8 @@ Each sweep checks every unresolved deviation older than the stale threshold with
   is lost, Temporal retries the Activity, and the same rebook is sent again. A real integration
   must pass an idempotency key, such as `deviationKey`. The mock doesn't need one.
 - **Versioning:** long-waiting workflows would need `Workflow.getVersion()` before any future
-  change to the order of Activity calls. This change adds no new calls. The new optional
-  `manualReason` input field defaults to `null`, so payloads from existing runs still deserialize.
+  change to the order of Activity calls. The optional `manualReason` input field defaults to
+  `null`, so payloads from older runs still deserialize.
 
 ## Outgoing DeviationResolved event
 
@@ -275,7 +278,7 @@ stays in `resolution_note`.
 
 **Where the event is published, and why it isn't duplicated**
 - The existing `CloseRecovery` Activity first commits the resolution, then calls
-  `publishResolvedEventOnce`. The workflow code is unchanged.
+  `publishResolvedEventOnce`. Publishing happens inside the Activity, not in the workflow.
 - An event is published only for a `RESOLVED` row whose `resolved_event_published_at` (Flyway V4) is
   still null. That column is set by a conditional UPDATE *after* the publish call returns without
   an error.
@@ -288,13 +291,14 @@ stays in `resolution_note`.
 - **What is and isn't guaranteed.** This is neither exactly-once nor guaranteed delivery.
   - ODM *attempts* to publish at least once per resolution, and never publishes a second time
     after a recorded success. Any duplicate carries the same deterministic `eventId`.
-  - The POC uses Solace **direct** delivery, like every other publisher in this POC.
+  - The DeviationResolved publisher uses Solace **direct** delivery (the Full-Serve publisher, by
+    contrast, sends persistent messages and waits for the broker's acknowledgement).
     - When the publish call returns, the Solace client has *accepted* the message; the broker
       has not confirmed it. A broker-side failure is only reported asynchronously and logged, so
       the marker can be set for a message that never reached the broker.
     - Direct messages are not persisted, so a subscriber that is not connected when the event is
       published never receives it.
-  - If Solace stays down past the Activity's 5 retries, the resolution is kept but the event is
+  - If Solace stays down past the Activity's 5 attempts, the resolution is kept but the event is
     never published. The row then shows `RESOLVED` with a null `resolved_event_published_at`.
     Rows resolved before V4 also have a null marker, because the event did not exist yet.
 - **Out of scope for this POC:** production-grade durable delivery. That would mean guaranteed
