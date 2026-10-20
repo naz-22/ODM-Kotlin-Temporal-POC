@@ -114,7 +114,7 @@ Then follow [Flow 1](#flow-1---order-lifecycle-scenarios-1-4),
 
 There are two supported ways to run the POC. Both use the same `docker-compose.yml`.
 
-### Option A - everything in Docker (verified)
+### Option A - everything in Docker
 
 ```bash
 cp .env.example .env                                     # once; compose needs it (DB names and credentials)
@@ -142,11 +142,11 @@ docker compose --profile apps up -d --build odm-service   # pulls in odm-postgre
 To shorten the Full-Serve alert schedule for a demo, set `ODM_FULLSERVE_ALERT_SCHEDULE=0s,1m,3m`
 in `.env` (or the shell) before `up`.
 
-### Option B - infrastructure in Docker, services on the host (not freshly verified)
+### Option B - infrastructure in Docker, services on the host (not re-verified)
 
 Useful while developing (IDE debugging, fast restarts). These commands match the code and
-configuration, but this way of running was not re-verified after the Docker changes (see
-[Verification status](#verification-status)).
+configuration, but this way of running was not re-verified after the Docker setup was added (see
+[Limitations](#limitations-simulated-integrations-and-external-dependencies)).
 
 ```bash
 cp .env.example .env
@@ -322,7 +322,7 @@ timers, the `resolutionUpdate` Signal and the result `CLOSED`.
 All tests run without Docker or any running infrastructure: workflows run on Temporal's in-memory
 time-skipping test server, Drools rules are evaluated for real, and the database and Solace are
 replaced by in-memory doubles or mocks. No test talks to a real Postgres, Temporal server or
-Solace broker; those integrations are verified by running the flows above.
+Solace broker; those integrations are exercised by running the flows above.
 
 | Flow | Main test classes |
 |---|---|
@@ -360,34 +360,12 @@ blocked by the environment), add `-Dkotlin.compiler.daemon=false`.
 - **Solace**: the bundled broker is the free PubSub+ Standard image for local use. A shared or managed
   broker cannot be bundled; point the services at it with the `SOLACE_*` variables (see
   [docs/solace.md](docs/solace.md)). Nothing was tested against a non-local broker.
+- **Not verified**: only Linux x86-64 has been tried (macOS, Windows and ARM machines have not);
+  Option B (services on the host) has not been re-run since the Docker setup was added; no shared
+  or company Solace broker or Temporal cluster has been used; broker, Temporal or database outages,
+  dead-message queues and several ODM instances are covered only by automated tests with doubles,
+  not by live runs.
 - **Not production-ready**: no authentication, no actuator health/metrics, default Solace VPN and
   client user, local throwaway credentials, the in-memory notification store, and the
   known gaps listed in [docs/odm-fullserve-walkthrough.md](docs/odm-fullserve-walkthrough.md#known-gaps)
   and [docs/autorecovery.md](docs/autorecovery.md).
-
-## Verification status
-
-<!-- Keep this table factual: only record what was actually executed, with the date. -->
-
-Recorded on 2026-10-20 on a local Linux machine (Docker 29, Compose v5, JDK 21), against the
-working tree of `feature/full-serve-deviation-lifecycle-poc` (uncommitted changes included).
-The Docker runs used a separate Compose project with a scratch override that only removes the
-fixed `container_name`s and shifts the host ports, so that it could run beside an existing local
-stack; environment, health checks, dependencies and networks were identical to this
-`docker-compose.yml` (checked with `docker compose config`). The default ports and container
-names themselves were not exercised.
-
-| What | Result |
-|---|---|
-| `./mvnw -B clean test -Dkotlin.compiler.daemon=false` | Exit 0. 140 tests, 0 failures, 0 errors, 0 skipped (order 18, inventory 9, payment 6, notification 3, odm 104) |
-| `docker compose --profile apps build` | All five images built with the classic builder (no BuildKit); runtime user `app` (non-root) |
-| `docker compose --profile apps up -d --wait` from empty volumes | All services healthy in about 1 min; Flyway applied (odm V1-V5, others V1); Temporal shows pollers on all three task queues; odm-service provisioned both Full-Serve queues with their topic subscriptions |
-| Order Lifecycle Scenarios 1-4 (scripted, in Docker) | Passed: COMPLETED / ORDER_FAILED (FAIL_ORDER) / COMPLETED after RETRY / ORDER_CANCELLED after RETRY, RETRY, COMPENSATE; notification-service received `order/confirmed` for the completed orders |
-| Auto-Recovery Scenarios 5-6 (scripted, in Docker) | Passed: AUTO_RECOVERED; MANUAL wait, Signal, MANUALLY_RESOLVED; duplicate `200`; second resolution `409`; DeviationResolved event received by the demo consumer |
-| Full Serve through the Solace queues (scripted, in Docker) | Passed with the default schedule: OPEN, O360 notification and alert #1 to SPM/Dynamics, duplicate ignored, invalid `400`, update -> CLOSED with alert closure and O360 closure, late update ignored. Alert #2 on its timer was checked in an earlier run with `ODM_FULLSERVE_ALERT_SCHEDULE=0s,20s,10m` |
-| Restart: `down` (volumes kept), then `up` | Passed (earlier run): waiting Auto-Recovery and Full-Serve workflows resumed and closed; earlier orders intact |
-| Graceful stop (`docker compose stop`) | odm-service and order-service stopped in about 1 s on SIGTERM, shutdown hooks ran |
-| Option B (services on the host with `./mvnw spring-boot:run`) | Not re-run as part of this verification |
-| macOS, Windows, ARM machines | Not verified |
-| Against a shared/company Solace broker or Temporal cluster | Not verified |
-| Failure injection (broker/Temporal/DB outage, DMQ, several ODM instances) | Not verified live; covered only by automated tests with doubles where the docs say so |
